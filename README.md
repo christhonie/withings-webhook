@@ -31,6 +31,46 @@ Il Worker è progettato per essere modulare, scalabile e robusto, con gestione t
 
 ---
 
+## 🔧 Configurazione
+Il Worker richiede le seguenti variabili d'ambiente per funzionare correttamente:
+
+### 1. Withings OAuth Credentials
+- WITHINGS_CLIENT_ID - ID client OAuth Withings
+- WITHINGS_CLIENT_SECRET - Secret client OAuth Withings
+
+Come ottenerle:
+- Vai su Withings Developer
+- Registrati/Accedi al tuo account
+- Crea una nuova applicazione
+- Nella dashboard dell'app, copia:
+-    Client ID → WITHINGS_CLIENT_ID
+-    Client Secret → WITHINGS_CLIENT_SECRET (mantieni questo valore segreto)
+
+### 2. Intervals.icu API Credentials
+- INTERVALS_ATHLETE_ID - ID dell'atleta Intervals
+- INTERVALS_API_KEY - API Key per Intervals
+
+Come ottenerle:
+- Accedi al tuo account Intervals.icu
+- Vai su Settings → API
+- Copia il tuo Athlete ID → INTERVALS_ATHLETE_ID
+- Genera una nuova API Key → INTERVALS_API_KEY
+
+### 3. Cloudflare KV Namespace
+- MY_KV - Namespace KV Cloudflare per memorizzare token e dati
+
+Come configurarlo:
+- Nel dashboard Cloudflare, vai a Workers → KV
+- Clicca Create Namespace
+- Assegna un nome (es. withings-kv) e clicca Create
+- Torna al tuo Worker, vai in Settings → Variables
+- Aggiungi una variabile d'ambiente:
+-    Variable name: MY_KV
+-    Value: seleziona il namespace appena creato dal dropdown
+- Clicca Save
+
+---
+
 ## 📝 Struttura del progetto
 
 - `index.js` → codice principale del Worker
