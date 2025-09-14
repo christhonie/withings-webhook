@@ -14,7 +14,7 @@ The Worker is designed to be modular, scalable, and robust, with OAuth token man
 - Extracts configured fields (weight, muscle mass, body fat, etc.).
 - Sends data to **Intervals.icu** with automatic retry (2 attempts).
 - Saves to KV for manual retry in case of failure.
-- Detailed logging of all operations.
+- **Comprehensive logging system** with detailed operation tracking.
 
 ---
 
@@ -194,12 +194,115 @@ Main keys:
 
 ---
 
+## 📊 Logging System
+
+The Worker includes a comprehensive logging system that provides detailed visibility into all operations:
+
+### Log Levels
+- **INFO** - Normal operations and successful processing
+- **WARN** - Non-critical issues (retries, rate limiting)
+- **ERROR** - Critical errors that stop processing
+
+### Log Format
+All logs include timestamps and structured data:
+```
+[2024-01-15T10:30:00.000Z] [INFO] Processing group 12345_1641081600 for date 2024-01-15T00:00:00.000Z
+[2024-01-15T10:30:00.100Z] [INFO] Extracted configured fields for 12345_1641081600 {weight: 75.5, bodyFat: 1.52}
+[2024-01-15T10:30:00.200Z] [WARN] Intervals send failed attempt 1 for 12345_1641081600 {status: 429, text: "Rate limited"}
+```
+
+### What Gets Logged
+
+#### **HTTP Request Processing**
+- Request method and payload extraction
+- Action validation (subscribe/notify)
+- Payload validation results
+
+#### **Token Management**
+- Token retrieval from KV
+- Token validation and expiration status
+- Token refresh operations with retry attempts
+- Rate limiting (error 601) handling
+
+#### **Data Processing**
+- Withings API calls and responses
+- Number of measurement groups found
+- Individual group processing
+- Field extraction and unit conversions
+- Duplicate detection (already sent fields)
+
+#### **Intervals Integration**
+- Send attempts and results
+- Retry operations with delays
+- Success/failure status
+- Manual retry data storage
+
+### Example Log Flow
+Here's what a typical successful processing looks like:
+
+```
+[2024-01-15T10:30:00.000Z] [INFO] Incoming POST request
+[2024-01-15T10:30:00.100Z] [INFO] Payload extracted from formData {userid: "12345", action: "notify", startdate: "1640995200", enddate: "1641081600"}
+[2024-01-15T10:30:00.200Z] [INFO] Validating payload {userid: "12345", startdate: "1640995200", enddate: "1641081600"}
+[2024-01-15T10:30:00.300Z] [INFO] Payload validation successful
+[2024-01-15T10:30:00.400Z] [INFO] Starting async processing with ctx.waitUntil
+[2024-01-15T10:30:00.500Z] [INFO] Starting handleNotify for userid: 12345, startdate: 1640995200, enddate: 1641081600
+[2024-01-15T10:30:00.600Z] [INFO] Getting valid access token for userid: 12345
+[2024-01-15T10:30:00.700Z] [INFO] Valid token found in KV for userid: 12345, expires in 7200 seconds
+[2024-01-15T10:30:00.800Z] [INFO] Calling Withings API for userid: 12345
+[2024-01-15T10:30:01.000Z] [INFO] Withings API response status: 0
+[2024-01-15T10:30:01.100Z] [INFO] Found 2 measurement groups
+[2024-01-15T10:30:01.200Z] [INFO] Processing group 12345_1641081600 for date 2024-01-15T00:00:00.000Z
+[2024-01-15T10:30:01.300Z] [INFO] Processed measures for 12345_1641081600 [{type: 1, value: 75.5, unit: 0}, {type: 6, value: 15.2, unit: 1}]
+[2024-01-15T10:30:01.400Z] [INFO] Extracted configured fields for 12345_1641081600 {weight: 75.5, bodyFat: 1.52}
+[2024-01-15T10:30:01.500Z] [INFO] Already sent fields for 12345_1641081600 {}
+[2024-01-15T10:30:01.600Z] [INFO] New fields to send for 12345_1641081600 {weight: 75.5, bodyFat: 1.52}
+[2024-01-15T10:30:01.700Z] [INFO] Starting Intervals send for 12345_1641081600 with 2 fields
+[2024-01-15T10:30:01.800Z] [INFO] Sending to Intervals (attempt 1) for 12345_1641081600
+[2024-01-15T10:30:02.000Z] [INFO] Successfully sent to Intervals for 12345_1641081600, status: 200
+```
+
+### Error Log Examples
+Here's what error scenarios look like:
+
+**Token Refresh Error:**
+```
+[2024-01-15T10:30:00.000Z] [INFO] Refreshing access token for userid: 12345 (attempt 1)
+[2024-01-15T10:30:00.100Z] [WARN] Rate limited (601), waiting 10 seconds before retry 1
+[2024-01-15T10:30:10.200Z] [INFO] Token refresh successful for userid: 12345, expires in 10800 seconds
+```
+
+**Intervals Send Failure:**
+```
+[2024-01-15T10:30:00.000Z] [INFO] Sending to Intervals (attempt 1) for 12345_1641081600
+[2024-01-15T10:30:00.100Z] [WARN] Intervals send failed attempt 1 for 12345_1641081600 {status: 429, text: "Rate limited"}
+[2024-01-15T10:30:00.200Z] [INFO] Retrying in 2 seconds for 12345_1641081600
+[2024-01-15T10:30:02.300Z] [INFO] Sending to Intervals (attempt 2) for 12345_1641081600
+[2024-01-15T10:30:02.400Z] [ERROR] All retries failed for 12345_1641081600, saving for manual retry
+```
+
+**Payload Validation Error:**
+```
+[2024-01-15T10:30:00.000Z] [INFO] Validating payload {userid: "invalid", startdate: "1640995200", enddate: "1641081600"}
+[2024-01-15T10:30:00.100Z] [ERROR] Payload validation error Invalid userid
+```
+
+### Monitoring Recommendations
+- Monitor logs for **ERROR** level messages
+- Watch for frequent **WARN** messages (may indicate issues)
+- Track successful processing patterns
+- Use logs for debugging data flow issues
+- Set up alerts for critical errors
+
+---
+
 ## ⚠️ Error Handling
 
-- All errors are logged to console.
+- All errors are logged to console with detailed context.
 - Main flows are not blocked by errors: the Worker responds immediately to Withings.
 - Automatic retries managed for tokens and Intervals sending.
 - Persistent data saved for manual retry if necessary.
+- Comprehensive error logging helps with troubleshooting.
 
 ---
 
@@ -228,8 +331,12 @@ Main keys:
 ## 🛠️ Tips
 
 - Update `FIELD_MAPPING` to add new Withings fields.
-- Monitor Worker logs for any errors or retries.
+- **Monitor Worker logs** for any errors or retries using the comprehensive logging system.
+- **Set up log monitoring** to catch issues early (ERROR level alerts).
+- **Use log data** to optimize field mapping and identify frequently sent data.
+- **Track retry patterns** to identify potential API issues.
 - Periodic KV cleanup recommended to avoid old data accumulation.
+- **Debug data flow** using the detailed processing logs.
 
 ---
 

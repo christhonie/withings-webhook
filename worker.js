@@ -1,75 +1,135 @@
-// Withings -> Cloudflare Worker -> Intervals (modulare, con retry automatici)
-// Questo Worker riceve notifiche Withings, valida il payload, gestisce token OAuth,
-// recupera misure, estrae campi configurati, invia a Intervals, e gestisce eventuali errori/retry.
+// Withings -> Cloudflare Worker -> Intervals (modular, with automatic retries)
+// This Worker receives Withings notifications, validates payload, manages OAuth tokens,
+// retrieves measurements, extracts configured fields, sends to Intervals, and handles errors/retries.
+
+// 🔧 Utility function for detailed logging
+function log(level, message, data = null) {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] [${level}] ${message}`;
+  
+  if (data !== null) {
+    console[level.toLowerCase()](logMessage, data);
+  } else {
+    console[level.toLowerCase()](logMessage);
+  }
+}
+
+// 🔧 Specialized logging functions for different operations
+function logData(operation, message, data = null, level = "INFO") {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] [${level}] [DATA:${operation}] ${message}`;
+  
+  if (data !== null) {
+    console[level.toLowerCase()](logMessage, data);
+  } else {
+    console[level.toLowerCase()](logMessage);
+  }
+}
+
+function logApi(operation, message, data = null, level = "INFO") {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] [${level}] [API:${operation}] ${message}`;
+  
+  if (data !== null) {
+    console[level.toLowerCase()](logMessage, data);
+  } else {
+    console[level.toLowerCase()](logMessage);
+  }
+}
+
+function logProcessing(operation, message, data = null, level = "INFO") {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] [${level}] [PROCESS:${operation}] ${message}`;
+  
+  if (data !== null) {
+    console[level.toLowerCase()](logMessage, data);
+  } else {
+    console[level.toLowerCase()](logMessage);
+  }
+}
 
 export default {
     async fetch(request, env, ctx) {
-      // 🔹 Controllo tipo di richiesta HTTP
-      // HEAD → usato per check di salute
-      if (request.method === "HEAD") return new Response("OK", { status: 200 });
+      log("INFO", `Incoming ${request.method} request`);
+      
+      // 🔹 HTTP request type check
+      // HEAD → used for health check
+      if (request.method === "HEAD") {
+        log("INFO", "Health check request - returning 200");
+        return new Response("OK", { status: 200 });
+      }
   
-      // Solo POST è consentito, altrimenti errore 400
-      if (request.method !== "POST") return new Response("Withings Worker: use POST", { status: 400 });
+      // Only POST is allowed, otherwise return 400 error
+      if (request.method !== "POST") {
+        log("WARN", `Unsupported method: ${request.method}`);
+        return new Response("Withings Worker: use POST", { status: 400 });
+      }
   
-      // 🔹 Estrazione payload da formData inviato da Withings
+      // 🔹 Extract payload from formData sent by Withings
       const form = await request.formData();
       const payload = Object.fromEntries(form);
+      log("INFO", "Payload extracted from formData", payload);
   
-      // 🔹 Gestione subscribe (usato da Withings per registrazione callback)
+      // 🔹 Handle subscribe (used by Withings for callback registration)
       if (payload.action === "subscribe") {
+        log("INFO", "Subscribe action - returning status 0");
         return new Response(JSON.stringify({ status: 0 }), { headers: { "Content-Type": "application/json" }});
       }
   
-      // 🔹 Controllo action "notify" → solo notify può procedere
+      // 🔹 Check "notify" action → only notify can proceed
       if (payload.action !== "notify") {
+        log("WARN", `Unsupported action: ${payload.action}`);
         return new Response("Unsupported action", { status: 400 });
       }
   
       try {
-        // 🔹 Validazione payload: userid numerico, startdate numerico, enddate numerico e coerente
+        // 🔹 Payload validation: userid numeric, startdate numeric, enddate numeric and consistent
+        log("INFO", "Validating payload", { userid: payload.userid, startdate: payload.startdate, enddate: payload.enddate });
         validatePayload(payload);
+        log("INFO", "Payload validation successful");
   
-        // 🔹 Risposta immediata a Withings per evitare timeout
-        // ctx.waitUntil permette di continuare il processing async senza bloccare la risposta
+        // 🔹 Immediate response to Withings to avoid timeout
+        // ctx.waitUntil allows continuing async processing without blocking the response
+        log("INFO", "Starting async processing with ctx.waitUntil");
         ctx.waitUntil(handleNotify(payload, env));
         return new Response("OK", { status: 200 });
   
       } catch (err) {
-        // 🔹 Se il payload non è valido, log e ritorna errore 400
-        console.error("Payload validation error:", err);
+        // 🔹 If payload is invalid, log and return 400 error
+        log("ERROR", "Payload validation error", err.message);
         return new Response("Invalid payload: " + err.message, { status: 400 });
       }
     }
   };
   
-  // 🔧 Funzione di validazione payload
+  // 🔧 Payload validation function
   function validatePayload(payload) {
-    // Controlla che userid sia presente e numerico
+    // Check that userid is present and numeric
     const userid = payload.userid;
     if (!userid || typeof userid !== 'string' || !/^\d+$/.test(userid)) {
       throw new Error('Invalid userid');
     }
   
-    // Controlla che startdate sia numerico (default 0 se mancante)
+    // Check that startdate is numeric (default 0 if missing)
     const startdate = payload.startdate || "0";
     if (!/^\d+$/.test(startdate)) {
       throw new Error('Invalid startdate');
     }
   
-    // Controlla enddate numerico e maggiore o uguale a startdate
+    // Check enddate is numeric and greater than or equal to startdate
     const enddate = payload.enddate || Math.floor(Date.now()/1000).toString();
     if (!/^\d+$/.test(enddate) || Number(enddate) < Number(startdate)) {
       throw new Error('Invalid enddate');
     }
   
-    // Aggiorna payload con valori validati
+    // Update payload with validated values
     payload.userid = userid;
     payload.startdate = startdate;
     payload.enddate = enddate;
   }
   
-  // 🔧 Configurazione mapping Withings -> Intervals
-  // Contiene tutti i tipi di misura Withings e come convertirli in campi Intervals
+  // 🔧 Withings -> Intervals mapping configuration
+  // Contains all Withings measurement types and how to convert them to Intervals fields
   const FIELD_MAPPING = {
     weight: { withingsType: 1, intervalsField: 'weight', decimals: 3 },
     bodyFat: { withingsType: 6, intervalsField: 'bodyFat', decimals: 2 },
@@ -82,35 +142,46 @@ export default {
     metabolicAge: { withingsType: 227, intervalsField: 'WithingsMetabolicAge', decimals: 0 },
   };
   
-  // 🔧 Ottieni token valido da KV o tramite refresh se scaduto
-  // Retry automatico incluso in caso di errore 601
+  // 🔧 Get valid token from KV or refresh if expired
+  // Automatic retry included in case of error 601
   async function getValidAccessToken(userid, env) {
     const tokenKey = `token_data_${userid}`;
+    log("INFO", `Getting valid access token for userid: ${userid}`);
+    
     try {
       const tokenDataStr = await env.MY_KV.get(tokenKey);
       if (tokenDataStr) {
         const tokenData = JSON.parse(tokenDataStr);
         const now = Math.floor(Date.now() / 1000);
-        // Se token valido con buffer 60s, ritorna subito
+        // If token is valid with 60s buffer, return immediately
         if (tokenData.expires_at && now < tokenData.expires_at - 60) {
+          log("INFO", `Valid token found in KV for userid: ${userid}, expires in ${tokenData.expires_at - now} seconds`);
           return tokenData.access_token;
         }
+        log("INFO", `Token expired for userid: ${userid}, refreshing...`);
+      } else {
+        log("INFO", `No token found in KV for userid: ${userid}, refreshing...`);
       }
-      // Token mancante o scaduto → refresh
+      // Token missing or expired → refresh
       return await refreshAccessToken(userid, env);
     } catch (err) {
-      console.error("getValidAccessToken error:", err);
+      log("ERROR", "getValidAccessToken error", err.message);
       throw err;
     }
   }
   
-  // 🔧 Refresh token con retry automatico fino a 3 tentativi su errore 601
+  // 🔧 Refresh token with automatic retry up to 3 attempts on error 601
   async function refreshAccessToken(userid, env, retryCount = 0) {
     const refreshKey = `refresh_${userid}`;
     const tokenKey = `token_data_${userid}`;
+    
+    log("INFO", `Refreshing access token for userid: ${userid} (attempt ${retryCount + 1})`);
   
     const refreshToken = await env.MY_KV.get(refreshKey);
-    if (!refreshToken) throw new Error(`No refresh token for userid ${userid}`);
+    if (!refreshToken) {
+      log("ERROR", `No refresh token found for userid: ${userid}`);
+      throw new Error(`No refresh token for userid ${userid}`);
+    }
   
     const tokenResp = await fetch("https://wbsapi.withings.net/v2/oauth2", {
       method: "POST",
@@ -125,15 +196,18 @@ export default {
     });
   
     const tokenJson = await tokenResp.json();
+    logApi("TOKEN", `Token refresh response status: ${tokenJson.status}`, tokenJson);
   
-    // Retry intelligente su errore 601
+    // Smart retry on error 601
     if (tokenJson.status === 601 && retryCount < 3) {
       const waitSeconds = tokenJson.body?.wait_seconds || 10;
+      log("WARN", `Rate limited (601), waiting ${waitSeconds} seconds before retry ${retryCount + 1}`);
       await new Promise(res => setTimeout(res, waitSeconds * 1000));
       return refreshAccessToken(userid, env, retryCount + 1);
     }
   
     if (tokenJson.status !== 0 || !tokenJson.body?.access_token) {
+      log("ERROR", "Token refresh failed", tokenJson);
       throw new Error(`Refresh token failed: ${JSON.stringify(tokenJson)}`);
     }
   
@@ -147,19 +221,23 @@ export default {
   
     await env.MY_KV.put(tokenKey, JSON.stringify(tokenData));
     await env.MY_KV.put(refreshKey, tokenJson.body.refresh_token);
+    
+    logApi("TOKEN", `Token refresh successful for userid: ${userid}, expires in ${tokenJson.body.expires_in} seconds`);
   
     return tokenJson.body.access_token;
   }
   
-  // 🔧 Elaborazione notify con retry automatico anche per Intervals
+  // 🔧 Notify processing with automatic retry also for Intervals
   async function handleNotify(payload, env) {
     const { userid, startdate, enddate } = payload;
+    log("INFO", `Starting handleNotify for userid: ${userid}, startdate: ${startdate}, enddate: ${enddate}`);
   
     try {
-      // 🔹 Ottieni access token valido
+      // 🔹 Get valid access token
       const accessToken = await getValidAccessToken(userid, env);
   
-      // 🔹 Recupera misure Withings
+      // 🔹 Retrieve Withings measurements
+      logApi("WITHINGS", `Calling Withings API for userid: ${userid}`);
       const params = new URLSearchParams({ action: "getmeas", startdate, enddate });
       const measResp = await fetch("https://wbsapi.withings.net/measure", {
         method: "POST",
@@ -168,16 +246,27 @@ export default {
       });
   
       const measJson = await measResp.json();
-      if (!measJson || measJson.status !== 0 || !measJson.body) return;
+      logApi("WITHINGS", `API response status: ${measJson?.status}`, measJson);
+      
+      if (!measJson || measJson.status !== 0 || !measJson.body) {
+        logApi("WITHINGS", "No valid data from Withings API", measJson, "WARN");
+        return;
+      }
   
       const groups = measJson.body.measuregrps || [];
-      if (!groups.length) return;
+      logData("MEASUREMENTS", `Found ${groups.length} measurement groups`);
+      
+      if (!groups.length) {
+        logData("MEASUREMENTS", "No measurement groups found", null, "WARN");
+        return;
+      }
   
       for (const grp of groups) {
         const grpid = grp.grpid || `${userid}_${grp.date}`;
         const date_iso = new Date(grp.date * 1000).toISOString();
+        logProcessing("GROUP", `Processing group ${grpid} for date ${date_iso}`);
   
-        // 🔹 Processa le misure: calcola valore corretto con unit
+        // 🔹 Process measures: calculate correct value with unit
         const processed = {
           userid,
           grpid,
@@ -189,33 +278,58 @@ export default {
             value: Number(m.value) * Math.pow(10, Number(m.unit))
           }))
         };
+        
+        logData("MEASURES", `Processed measures for ${grpid} on ${date_iso}`, processed.measures);
   
-        // 🔹 Estrai campi configurati
+        // 🔹 Extract configured fields
         const extractedData = extractConfiguredFields(processed.measures);
-        if (!Object.keys(extractedData).length) continue;
+        logData("FIELDS", `Extracted configured fields for ${grpid} on ${date_iso}`, extractedData);
+        
+        if (!Object.keys(extractedData).length) {
+          logData("FIELDS", `No configured fields found for ${grpid} on ${date_iso}, skipping`, null, "WARN");
+          continue;
+        }
   
-        // 🔹 Determina quali campi sono nuovi
+        // 🔹 Determine which fields are new
         const alreadySent = await getAlreadySentFields(userid, grpid, env);
+        logData("DUPLICATES", `Already sent fields for ${grpid} on ${date_iso}`, alreadySent);
+        
         const newFields = getNewFieldsToSend(extractedData, alreadySent);
-        if (!Object.keys(newFields).length) continue;
+        logData("DUPLICATES", `New fields to send for ${grpid} on ${date_iso}`, newFields);
+        
+        if (!Object.keys(newFields).length) {
+          logData("DUPLICATES", `All fields already sent for ${grpid} on ${date_iso}, skipping`, null, "INFO");
+          continue;
+        }
   
-        // 🔹 Retry automatico invio Intervals fino a 2 tentativi
+        // 🔹 Automatic retry Intervals send up to 2 attempts
         let attempts = 0;
         let sent = false;
+        
+        logApi("INTERVALS", `Starting Intervals send for ${grpid} on ${date_iso} with ${Object.keys(newFields).length} fields`);
+        
         while (attempts < 2 && !sent) {
+          attempts++;
+          logApi("INTERVALS", `Sending to Intervals (attempt ${attempts}) for ${grpid} on ${date_iso}`);
+          
           const sendRes = await sendToIntervals({ date_iso, wellnessData: newFields }, env);
+          
           if (sendRes.ok) {
+            logApi("INTERVALS", `Successfully sent to Intervals for ${grpid} on ${date_iso}, status: ${sendRes.status}`);
             await saveSuccessfulFields(userid, grpid, newFields, sendRes.status, env);
             sent = true;
           } else {
-            console.warn(`Intervals send failed attempt ${attempts + 1}:`, sendRes.status);
-            attempts++;
-            if (attempts < 2) await new Promise(r => setTimeout(r, 2000)); // breve delay tra retry
+            log("WARN", `Intervals send failed attempt ${attempts} for ${grpid} on ${date_iso}`, { status: sendRes.status, text: sendRes.text });
+            if (attempts < 2) {
+              logApi("INTERVALS", `Retrying in 2 seconds for ${grpid} on ${date_iso}`);
+              await new Promise(r => setTimeout(r, 2000)); // brief delay between retries
+            }
           }
         }
   
-        // 🔹 Se ancora fallito → salva KV per retry manuale futuro
+        // 🔹 If still failed → save to KV for future manual retry
         if (!sent) {
+          logData("RETRY", `All retries failed for ${grpid} on ${date_iso}, saving for manual retry`, null, "ERROR");
           await env.MY_KV.put(`retry_${userid}_${grpid}`, JSON.stringify({
             attemptAt: new Date().toISOString(),
             fields: newFields
@@ -224,7 +338,7 @@ export default {
       }
   
     } catch (err) {
-      console.error("handleNotify error:", err);
+      log("ERROR", "handleNotify error", err.message);
     }
   }
   
@@ -255,7 +369,7 @@ export default {
     return newFields;
   }
   
-  // 🔧 Salva campi inviati con successo
+  // 🔧 Save successfully sent fields
   async function saveSuccessfulFields(userid, grpid, newFields, status, env) {
     const sentKey = `sent_${userid}_${grpid}`;
     const existing = await getAlreadySentFields(userid, grpid, env);
@@ -267,7 +381,7 @@ export default {
     }));
   }
   
-  // 🔧 Invia dati a Intervals
+  // 🔧 Send data to Intervals
   async function sendToIntervals({ date_iso, wellnessData }, env) {
     const date = date_iso.slice(0,10); // YYYY-MM-DD
     const athleteId = env.INTERVALS_ATHLETE_ID;
