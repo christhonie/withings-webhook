@@ -2,8 +2,34 @@
 // This Worker receives Withings notifications, validates payload, manages OAuth tokens,
 // retrieves measurements, extracts configured fields, sends to Intervals, and handles errors/retries.
 
+// 🔧 Logging configuration - adjust these to control verbosity
+const LOG_CONFIG = {
+  // Main log levels: ERROR, WARN, INFO, DEBUG
+  level: "INFO",
+  
+  // Enable/disable specific log categories
+  categories: {
+    data: true,        // DATA logs (measurements, fields, duplicates)
+    api: true,         // API logs (Withings, Intervals, tokens)
+    process: false,    // PROCESS logs (group processing)
+    general: true      // General logs (validation, errors)
+  },
+  
+  // Enable/disable specific operations
+  operations: {
+    measurements: true,    // Measurement group processing
+    fields: false,         // Field extraction details
+    duplicates: true,      // Duplicate checking (essential for debugging)
+    intervals: true,       // Intervals API calls
+    tokens: false,         // Token operations
+    retries: true          // Retry operations
+  }
+};
+
 // 🔧 Utility function for detailed logging
 function log(level, message, data = null) {
+  if (!shouldLog(level, "general")) return;
+  
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${level}] ${message}`;
   
@@ -16,6 +42,8 @@ function log(level, message, data = null) {
 
 // 🔧 Specialized logging functions for different operations
 function logData(operation, message, data = null, level = "INFO") {
+  if (!shouldLog(level, "data") || !LOG_CONFIG.operations[operation.toLowerCase()]) return;
+  
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${level}] [DATA:${operation}] ${message}`;
   
@@ -27,6 +55,8 @@ function logData(operation, message, data = null, level = "INFO") {
 }
 
 function logApi(operation, message, data = null, level = "INFO") {
+  if (!shouldLog(level, "api") || !LOG_CONFIG.operations[operation.toLowerCase()]) return;
+  
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${level}] [API:${operation}] ${message}`;
   
@@ -38,6 +68,8 @@ function logApi(operation, message, data = null, level = "INFO") {
 }
 
 function logProcessing(operation, message, data = null, level = "INFO") {
+  if (!shouldLog(level, "process")) return;
+  
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${level}] [PROCESS:${operation}] ${message}`;
   
@@ -46,6 +78,15 @@ function logProcessing(operation, message, data = null, level = "INFO") {
   } else {
     console[level.toLowerCase()](logMessage);
   }
+}
+
+// 🔧 Helper function to determine if we should log
+function shouldLog(level, category) {
+  const levels = { ERROR: 0, WARN: 1, INFO: 2, DEBUG: 3 };
+  const currentLevel = levels[LOG_CONFIG.level] || 2;
+  const messageLevel = levels[level] || 2;
+  
+  return LOG_CONFIG.categories[category] && messageLevel <= currentLevel;
 }
 
 export default {
@@ -196,7 +237,7 @@ export default {
     });
   
     const tokenJson = await tokenResp.json();
-    logApi("TOKEN", `Token refresh response status: ${tokenJson.status}`, tokenJson);
+    logApi("TOKENS", `Token refresh response status: ${tokenJson.status}`, tokenJson);
   
     // Smart retry on error 601
     if (tokenJson.status === 601 && retryCount < 3) {
@@ -222,7 +263,7 @@ export default {
     await env.MY_KV.put(tokenKey, JSON.stringify(tokenData));
     await env.MY_KV.put(refreshKey, tokenJson.body.refresh_token);
     
-    logApi("TOKEN", `Token refresh successful for userid: ${userid}, expires in ${tokenJson.body.expires_in} seconds`);
+    logApi("TOKENS", `Token refresh successful for userid: ${userid}, expires in ${tokenJson.body.expires_in} seconds`);
   
     return tokenJson.body.access_token;
   }
@@ -254,7 +295,7 @@ export default {
       }
   
       const groups = measJson.body.measuregrps || [];
-      logData("MEASUREMENTS", `Found ${groups.length} measurement groups`);
+      logData("MEASUREMENTS", `📊 Processing ${groups.length} measurement groups for userid: ${userid}`);
       
       if (!groups.length) {
         logData("MEASUREMENTS", "No measurement groups found", null, "WARN");
@@ -292,34 +333,38 @@ export default {
   
         // 🔹 Determine which fields are new
         const alreadySent = await getAlreadySentFields(userid, grpid, env);
-        logData("DUPLICATES", `Already sent fields for ${grpid} on ${date_iso}`, alreadySent);
-        
         const newFields = getNewFieldsToSend(extractedData, alreadySent);
-        logData("DUPLICATES", `New fields to send for ${grpid} on ${date_iso}`, newFields);
+        
+        // Log summary of duplicates and new fields
+        const duplicateCount = Object.keys(extractedData).length - Object.keys(newFields).length;
+        if (duplicateCount > 0) {
+          logData("DUPLICATES", `${duplicateCount} fields already sent for ${grpid} on ${date_iso}`, Object.keys(extractedData).filter(field => alreadySent[field] === extractedData[field]));
+        }
         
         if (!Object.keys(newFields).length) {
-          logData("DUPLICATES", `All fields already sent for ${grpid} on ${date_iso}, skipping`, null, "INFO");
+          logData("DUPLICATES", `All ${Object.keys(extractedData).length} fields already sent for ${grpid} on ${date_iso}, skipping`, null, "INFO");
           continue;
         }
+        
+        logData("DUPLICATES", `${Object.keys(newFields).length} new fields to send for ${grpid} on ${date_iso}`, Object.keys(newFields));
   
         // 🔹 Automatic retry Intervals send up to 2 attempts
         let attempts = 0;
         let sent = false;
         
-        logApi("INTERVALS", `Starting Intervals send for ${grpid} on ${date_iso} with ${Object.keys(newFields).length} fields`);
+        logApi("INTERVALS", `Sending ${Object.keys(newFields).length} fields to Intervals for ${grpid} on ${date_iso}`);
         
         while (attempts < 2 && !sent) {
           attempts++;
-          logApi("INTERVALS", `Sending to Intervals (attempt ${attempts}) for ${grpid} on ${date_iso}`);
           
           const sendRes = await sendToIntervals({ date_iso, wellnessData: newFields }, env);
           
           if (sendRes.ok) {
-            logApi("INTERVALS", `Successfully sent to Intervals for ${grpid} on ${date_iso}, status: ${sendRes.status}`);
+            logApi("INTERVALS", `✅ Successfully sent to Intervals: ${Object.keys(newFields).join(', ')} for ${grpid} on ${date_iso}`, newFields);
             await saveSuccessfulFields(userid, grpid, newFields, sendRes.status, env);
             sent = true;
           } else {
-            log("WARN", `Intervals send failed attempt ${attempts} for ${grpid} on ${date_iso}`, { status: sendRes.status, text: sendRes.text });
+            log("WARN", `❌ Intervals send failed (attempt ${attempts}) for ${grpid} on ${date_iso}`, { status: sendRes.status, text: sendRes.text });
             if (attempts < 2) {
               logApi("INTERVALS", `Retrying in 2 seconds for ${grpid} on ${date_iso}`);
               await new Promise(r => setTimeout(r, 2000)); // brief delay between retries
@@ -329,13 +374,15 @@ export default {
   
         // 🔹 If still failed → save to KV for future manual retry
         if (!sent) {
-          logData("RETRY", `All retries failed for ${grpid} on ${date_iso}, saving for manual retry`, null, "ERROR");
+          logData("RETRIES", `All retries failed for ${grpid} on ${date_iso}, saving for manual retry`, null, "ERROR");
           await env.MY_KV.put(`retry_${userid}_${grpid}`, JSON.stringify({
             attemptAt: new Date().toISOString(),
             fields: newFields
           }));
         }
       }
+      
+      logData("MEASUREMENTS", `✅ Completed processing ${groups.length} groups for userid: ${userid}`);
   
     } catch (err) {
       log("ERROR", "handleNotify error", err.message);
