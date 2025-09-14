@@ -26,6 +26,15 @@ const LOG_CONFIG = {
   }
 };
 
+// 🔧 Telegram notification configuration
+const TELEGRAM_CONFIG = {
+  enabled: true,           // Enable/disable Telegram notifications
+  botToken: null,         // Will be set from environment variable
+  chatId: null,           // Will be set from environment variable
+  includeData: true,      // Include sent data in notifications
+  includeErrors: true     // Include error notifications
+};
+
 // 🔧 Utility function for detailed logging
 function log(level, message, data = null) {
   if (!shouldLog(level, "general")) return;
@@ -87,6 +96,73 @@ function shouldLog(level, category) {
   const messageLevel = levels[level] || 2;
   
   return LOG_CONFIG.categories[category] && messageLevel <= currentLevel;
+}
+
+// 🔧 Telegram notification functions
+async function sendTelegramNotification(message, env) {
+  if (!TELEGRAM_CONFIG.enabled || !env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: env.TELEGRAM_CHAT_ID,
+        text: message,
+        parse_mode: 'HTML'
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Failed to send Telegram notification:', await response.text());
+    }
+  } catch (error) {
+    console.error('Error sending Telegram notification:', error);
+  }
+}
+
+function formatTelegramMessage(userid, results, error = null) {
+  const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  
+  if (error) {
+    return `🚨 <b>Withings Worker Error</b>\n` +
+           `👤 User: ${userid}\n` +
+           `⏰ Time: ${timestamp}\n` +
+           `❌ Error: ${error}`;
+  }
+
+  if (!results || results.length === 0) {
+    return `📊 <b>Withings Worker</b>\n` +
+           `👤 User: ${userid}\n` +
+           `⏰ Time: ${timestamp}\n` +
+           `ℹ️ No data to send`;
+  }
+
+  let message = `✅ <b>Withings Data Sent</b>\n` +
+                `👤 User: ${userid}\n` +
+                `⏰ Time: ${timestamp}\n` +
+                `📊 Groups: ${results.length}\n\n`;
+
+  results.forEach((result, index) => {
+    const date = result.date_iso.slice(0, 10);
+    const fields = Object.keys(result.fields).join(', ');
+    const values = Object.entries(result.fields)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(', ');
+    
+    message += `${index + 1}. <b>${date}</b>\n`;
+    message += `   Fields: ${fields}\n`;
+    if (TELEGRAM_CONFIG.includeData) {
+      message += `   Values: ${values}\n`;
+    }
+    message += `   Status: ${result.status}\n\n`;
+  });
+
+  return message;
 }
 
 export default {
@@ -272,6 +348,8 @@ export default {
   async function handleNotify(payload, env) {
     const { userid, startdate, enddate } = payload;
     log("INFO", `Starting handleNotify for userid: ${userid}, startdate: ${startdate}, enddate: ${enddate}`);
+    
+    const results = []; // Track successful sends for Telegram notification
   
     try {
       // 🔹 Get valid access token
@@ -291,6 +369,7 @@ export default {
       
       if (!measJson || measJson.status !== 0 || !measJson.body) {
         logApi("WITHINGS", "No valid data from Withings API", measJson, "WARN");
+        await sendTelegramNotification(formatTelegramMessage(userid, [], "No valid data from Withings API"), env);
         return;
       }
   
@@ -299,6 +378,7 @@ export default {
       
       if (!groups.length) {
         logData("MEASUREMENTS", "No measurement groups found", null, "WARN");
+        await sendTelegramNotification(formatTelegramMessage(userid, [], "No measurement groups found"), env);
         return;
       }
   
@@ -362,6 +442,15 @@ export default {
           if (sendRes.ok) {
             logApi("INTERVALS", `✅ Successfully sent to Intervals: ${Object.keys(newFields).join(', ')} for ${grpid} on ${date_iso}`, newFields);
             await saveSuccessfulFields(userid, grpid, newFields, sendRes.status, env);
+            
+            // Track successful send for Telegram notification
+            results.push({
+              grpid,
+              date_iso,
+              fields: newFields,
+              status: sendRes.status
+            });
+            
             sent = true;
           } else {
             log("WARN", `❌ Intervals send failed (attempt ${attempts}) for ${grpid} on ${date_iso}`, { status: sendRes.status, text: sendRes.text });
@@ -383,9 +472,17 @@ export default {
       }
       
       logData("MEASUREMENTS", `✅ Completed processing ${groups.length} groups for userid: ${userid}`);
+      
+      // Send Telegram notification with results
+      await sendTelegramNotification(formatTelegramMessage(userid, results), env);
   
     } catch (err) {
       log("ERROR", "handleNotify error", err.message);
+      
+      // Send Telegram notification for errors
+      if (TELEGRAM_CONFIG.includeErrors) {
+        await sendTelegramNotification(formatTelegramMessage(userid, [], err.message), env);
+      }
     }
   }
   

@@ -15,6 +15,7 @@ The Worker is designed to be modular, scalable, and robust, with OAuth token man
 - Sends data to **Intervals.icu** with automatic retry (2 attempts).
 - Saves to KV for manual retry in case of failure.
 - **Comprehensive logging system** with detailed operation tracking.
+- **Telegram notifications** for successful sends and errors (optional).
 
 ---
 
@@ -64,6 +65,18 @@ The Worker needs a KV namespace to store tokens and data:
 - Go to Settings → API
 - Copy your Athlete ID → `INTERVALS_ATHLETE_ID`
 - Generate a new API Key → `INTERVALS_API_KEY`
+
+### 4. Telegram Bot Notifications (Optional)
+- `TELEGRAM_BOT_TOKEN` - Telegram bot token for notifications
+- `TELEGRAM_CHAT_ID` - Telegram chat ID to receive notifications
+
+**How to obtain them:**
+- Create a new bot with [@BotFather](https://t.me/botfather) on Telegram
+- Send `/newbot` and follow the instructions
+- Copy the bot token → `TELEGRAM_BOT_TOKEN`
+- Start a chat with your bot and send any message
+- Visit `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+- Find your chat ID in the response → `TELEGRAM_CHAT_ID`
 
 ---
 
@@ -191,6 +204,63 @@ Main keys:
 | `refresh_${userid}`      | Refresh token                                        |
 | `sent_${userid}_${grpid}`| Fields already sent for a measurement group         |
 | `retry_${userid}_${grpid}` | Data to send manually if retry failed              |
+
+---
+
+## 📱 Telegram Notifications
+
+The Worker can send notifications to Telegram for successful data sends and errors. This is **optional** and requires additional configuration.
+
+### Notification Types
+
+#### **Successful Data Send**
+```
+✅ Withings Data Sent
+👤 User: 12345
+⏰ Time: 2024-01-15 12:30:00
+📊 Groups: 2
+
+1. 2024-01-15
+   Fields: weight, bodyFat
+   Values: weight: 75.5, bodyFat: 1.52
+   Status: 200
+
+2. 2024-01-14
+   Fields: muscleMass
+   Values: muscleMass: 45.2
+   Status: 200
+```
+
+#### **Error Notification**
+```
+🚨 Withings Worker Error
+👤 User: 12345
+⏰ Time: 2024-01-15 12:30:00
+❌ Error: Token refresh failed
+```
+
+#### **No Data Notification**
+```
+📊 Withings Worker
+👤 User: 12345
+⏰ Time: 2024-01-15 12:30:00
+ℹ️ No data to send
+```
+
+### Configuration
+
+Set these environment variables to enable notifications:
+- `TELEGRAM_BOT_TOKEN` - Your bot token from @BotFather
+- `TELEGRAM_CHAT_ID` - Your chat ID
+
+If these variables are not set, notifications will be disabled automatically.
+
+### Customization
+
+You can modify the notification behavior in the `TELEGRAM_CONFIG` object:
+- `enabled: true` - Enable/disable notifications
+- `includeData: true` - Include field values in notifications
+- `includeErrors: true` - Send notifications for errors
 
 ---
 
