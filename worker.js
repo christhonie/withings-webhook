@@ -5,7 +5,7 @@
 // 🔧 Logging configuration - adjust these to control verbosity
 const LOG_CONFIG = {
   // Main log levels: ERROR, WARN, INFO, DEBUG
-  level: "INFO",
+  level: "INFO",       // For DEBUG logs (Change to level: "DEBUG", 
   
   // Enable/disable specific log categories
   categories: {
@@ -185,19 +185,23 @@ export default {
       // 🔹 Extract payload from formData sent by Withings
       const form = await request.formData();
       const payload = Object.fromEntries(form);
-      log("INFO", "Payload extracted from formData", payload);
-  
+      //log("INFO", "Payload extracted from formData", payload);
+      log("INFO", `ℹ️️ Payload extracted from formData: ${JSON.stringify(payload)}`);
+
+
       // 🔹 Handle subscribe (used by Withings for callback registration)
       if (payload.action === "subscribe") {
         log("INFO", "Subscribe action - returning status 0");
         return new Response(JSON.stringify({ status: 0 }), { headers: { "Content-Type": "application/json" }});
       }
   
+      /*
       // 🔹 Check "notify" action → only notify can proceed
       if (payload.action !== "notify") {
         log("WARN", `Unsupported action: ${payload.action}`);
         return new Response("Unsupported action", { status: 400 });
       }
+      */
   
       try {
         // 🔹 Payload validation: userid numeric, startdate numeric, enddate numeric and consistent
