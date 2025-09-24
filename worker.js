@@ -1,6 +1,7 @@
 // Withings -> Cloudflare Worker -> Intervals (modular, with automatic retries)
 // This Worker receives Withings notifications, validates payload, manages OAuth tokens,
 // retrieves measurements, extracts configured fields, sends to Intervals, and handles errors/retries.
+// ENHANCED: Now calculates daily averages when multiple measurements exist for the same day
 
 // 🔧 Logging configuration - adjust these to control verbosity
 const LOG_CONFIG = {
@@ -22,7 +23,8 @@ const LOG_CONFIG = {
     duplicates: true,      // Duplicate checking (essential for debugging)
     intervals: true,       // Intervals API calls
     tokens: false,         // Token operations
-    retries: true          // Retry operations
+    retries: true,         // Retry operations
+    averaging: true        // Daily averaging operations
   }
 };
 
@@ -145,19 +147,22 @@ function formatTelegramMessage(userid, results, error = null) {
   let message = `✅ <b>Withings Data Sent</b>\n` +
                 `👤 User: ${userid}\n` +
                 `⏰ Time: ${timestamp}\n` +
-                `📊 Groups: ${results.length}\n\n`;
+                `📊 Days: ${results.length}\n\n`;
 
   results.forEach((result, index) => {
-    const date = result.date_iso.slice(0, 10);
+    const date = result.date;
     const fields = Object.keys(result.fields).join(', ');
     const values = Object.entries(result.fields)
-      .map(([key, value]) => `${key}: ${value}`)
+      .map(([key, value]) => `${key}: ${value}${result.averagedFields && result.averagedFields.includes(key) ? ' (avg)' : ''}`)
       .join(', ');
     
     message += `${index + 1}. <b>${date}</b>\n`;
     message += `   Fields: ${fields}\n`;
     if (TELEGRAM_CONFIG.includeData) {
       message += `   Values: ${values}\n`;
+    }
+    if (result.measurementCount > 1) {
+      message += `   📊 ${result.measurementCount} measurements averaged\n`;
     }
     message += `   Status: ${result.status}\n\n`;
   });
@@ -185,9 +190,7 @@ export default {
       // 🔹 Extract payload from formData sent by Withings
       const form = await request.formData();
       const payload = Object.fromEntries(form);
-      //log("INFO", "Payload extracted from formData", payload);
       log("INFO", `ℹ️️ Payload extracted from formData: ${JSON.stringify(payload)}`);
-
 
       // 🔹 Handle subscribe (used by Withings for callback registration)
       if (payload.action === "subscribe") {
@@ -195,23 +198,15 @@ export default {
         return new Response(JSON.stringify({ status: 0 }), { headers: { "Content-Type": "application/json" }});
       }
   
-      /*
-      // 🔹 Check "notify" action → only notify can proceed
-      if (payload.action !== "notify") {
-        log("WARN", `Unsupported action: ${payload.action}`);
-        return new Response("Unsupported action", { status: 400 });
-      }
-      */
-  
       try {
         // 🔹 Payload validation: userid numeric, startdate numeric, enddate numeric and consistent
-        log("INFO", "Validating payload", { userid: payload.userid, startdate: payload.startdate, enddate: payload.enddate });
+        log("DEBUG", "Validating payload", { userid: payload.userid, startdate: payload.startdate, enddate: payload.enddate });
         validatePayload(payload);
-        log("INFO", "Payload validation successful");
+        log("DEBUG", "Payload validation successful");
   
         // 🔹 Immediate response to Withings to avoid timeout
         // ctx.waitUntil allows continuing async processing without blocking the response
-        log("INFO", "Starting async processing with ctx.waitUntil");
+        log("DEBUG", "Starting async processing with ctx.waitUntil");
         ctx.waitUntil(handleNotify(payload, env));
         return new Response("OK", { status: 200 });
   
@@ -267,7 +262,7 @@ export default {
   // Automatic retry included in case of error 601
   async function getValidAccessToken(userid, env) {
     const tokenKey = `token_data_${userid}`;
-    log("INFO", `Getting valid access token for userid: ${userid}`);
+    log("DEBUG", `Getting valid access token for userid: ${userid}`);
     
     try {
       const tokenDataStr = await env.MY_KV.get(tokenKey);
@@ -276,12 +271,12 @@ export default {
         const now = Math.floor(Date.now() / 1000);
         // If token is valid with 60s buffer, return immediately
         if (tokenData.expires_at && now < tokenData.expires_at - 60) {
-          log("INFO", `Valid token found in KV for userid: ${userid}, expires in ${tokenData.expires_at - now} seconds`);
+          log("DEBUG", `Valid token found in KV for userid: ${userid}, expires in ${tokenData.expires_at - now} seconds`);
           return tokenData.access_token;
         }
-        log("INFO", `Token expired for userid: ${userid}, refreshing...`);
+        log("DEBUG", `Token expired for userid: ${userid}, refreshing...`);
       } else {
-        log("INFO", `No token found in KV for userid: ${userid}, refreshing...`);
+        log("DEBUG", `No token found in KV for userid: ${userid}, refreshing...`);
       }
       // Token missing or expired → refresh
       return await refreshAccessToken(userid, env);
@@ -296,7 +291,7 @@ export default {
     const refreshKey = `refresh_${userid}`;
     const tokenKey = `token_data_${userid}`;
     
-    log("INFO", `Refreshing access token for userid: ${userid} (attempt ${retryCount + 1})`);
+    log("DEBUG", `Refreshing access token for userid: ${userid} (attempt ${retryCount + 1})`);
   
     const refreshToken = await env.MY_KV.get(refreshKey);
     if (!refreshToken) {
@@ -317,7 +312,7 @@ export default {
     });
   
     const tokenJson = await tokenResp.json();
-    logApi("TOKENS", `Token refresh response status: ${tokenJson.status}`, tokenJson);
+    logApi("TOKENS", `Token refresh response status: ${tokenJson.status}`, tokenJson, "DEBUG");
   
     // Smart retry on error 601
     if (tokenJson.status === 601 && retryCount < 3) {
@@ -343,15 +338,113 @@ export default {
     await env.MY_KV.put(tokenKey, JSON.stringify(tokenData));
     await env.MY_KV.put(refreshKey, tokenJson.body.refresh_token);
     
-    logApi("TOKENS", `Token refresh successful for userid: ${userid}, expires in ${tokenJson.body.expires_in} seconds`);
+    logApi("TOKENS", `Token refresh successful for userid: ${userid}, expires in ${tokenJson.body.expires_in} seconds`, null, "DEBUG");
   
     return tokenJson.body.access_token;
   }
   
-  // 🔧 Notify processing with automatic retry also for Intervals
+  // 🔧 NEW: Function to group measurements by date and calculate daily averages
+  function groupMeasurementsByDate(groups) {
+    const dailyMeasurements = {};
+    
+    for (const grp of groups) {
+      const date_iso = new Date(grp.date * 1000).toISOString();
+      const date = date_iso.slice(0, 10); // Extract YYYY-MM-DD
+      
+      if (!dailyMeasurements[date]) {
+        dailyMeasurements[date] = [];
+      }
+      
+      // Process measures for this group
+      const processed = grp.measures.map(m => ({
+        type: Number(m.type),
+        raw_value: m.value,
+        unit: Number(m.unit),
+        value: Number(m.value) * Math.pow(10, Number(m.unit))
+      }));
+      
+      dailyMeasurements[date].push({
+        grpid: grp.grpid || `${grp.date}`,
+        timestamp: grp.date,
+        date_iso,
+        measures: processed
+      });
+    }
+    
+    return dailyMeasurements;
+  }
+  
+  // 🔧 NEW: Function to calculate daily averages for each field
+  function calculateDailyAverages(dailyMeasurements) {
+    const dailyAverages = {};
+    
+    for (const [date, measurements] of Object.entries(dailyMeasurements)) {
+      logData("AVERAGING", `📊 Calculating averages for ${date} with ${measurements.length} measurements`, null, "DEBUG");
+      
+      // Collect all field values for this date
+      const fieldValues = {};
+      const averagedFields = [];
+      
+      // Extract all field values from all measurements of the day
+      for (const measurement of measurements) {
+        const extractedFields = extractConfiguredFields(measurement.measures);
+        
+        for (const [fieldName, value] of Object.entries(extractedFields)) {
+          if (!fieldValues[fieldName]) {
+            fieldValues[fieldName] = [];
+          }
+          fieldValues[fieldName].push(value);
+        }
+      }
+      
+      // Calculate averages for each field
+      const averages = {};
+      for (const [fieldName, values] of Object.entries(fieldValues)) {
+        if (values.length > 0) {
+          const config = FIELD_MAPPING[fieldName];
+          const average = values.reduce((sum, val) => sum + val, 0) / values.length;
+          averages[fieldName] = Number(average.toFixed(config.decimals));
+          
+          if (values.length > 1) {
+            averagedFields.push(fieldName);
+            logData("AVERAGING", `📊 Field ${fieldName}: averaged ${values.length} values [${values.join(', ')}] = ${averages[fieldName]}`, null, "DEBUG");
+          } else {
+            logData("AVERAGING", `📊 Field ${fieldName}: single value ${averages[fieldName]}`, null, "DEBUG");
+          }
+        }
+      }
+      
+      if (Object.keys(averages).length > 0) {
+        // Use the most recent measurement's metadata for the daily average
+        const latestMeasurement = measurements.reduce((latest, current) => 
+          current.timestamp > latest.timestamp ? current : latest
+        );
+        
+        dailyAverages[date] = {
+          date,
+          date_iso: date + 'T12:00:00.000Z', // Use noon for daily averages
+          fields: averages,
+          averagedFields,
+          measurementCount: measurements.length,
+          grpids: measurements.map(m => m.grpid),
+          latestGrpid: latestMeasurement.grpid
+        };
+        
+        logData("AVERAGING", `✅ Daily averages calculated for ${date}`, {
+          fields: averages,
+          measurementCount: measurements.length,
+          averagedFields
+        }, "DEBUG");
+      }
+    }
+    
+    return dailyAverages;
+  }
+  
+  // 🔧 Notify processing with automatic retry also for Intervals - ENHANCED with daily averaging
   async function handleNotify(payload, env) {
     const { userid, startdate, enddate } = payload;
-    log("INFO", `Starting handleNotify for userid: ${userid}, startdate: ${startdate}, enddate: ${enddate}`);
+    log("DEBUG", `Starting handleNotify for userid: ${userid}, startdate: ${startdate}, enddate: ${enddate}`);
     
     const results = []; // Track successful sends for Telegram notification
   
@@ -360,7 +453,7 @@ export default {
       const accessToken = await getValidAccessToken(userid, env);
   
       // 🔹 Retrieve Withings measurements
-      logApi("WITHINGS", `Calling Withings API for userid: ${userid}`);
+      logApi("WITHINGS", `Calling Withings API for userid: ${userid}`, null, "DEBUG");
       const params = new URLSearchParams({ action: "getmeas", startdate, enddate });
       const measResp = await fetch("https://wbsapi.withings.net/measure", {
         method: "POST",
@@ -369,7 +462,7 @@ export default {
       });
   
       const measJson = await measResp.json();
-      logApi("WITHINGS", `API response status: ${measJson?.status}`, measJson);
+      logApi("WITHINGS", `API response status: ${measJson?.status}`, measJson, "DEBUG");
       
       if (!measJson || measJson.status !== 0 || !measJson.body) {
         logApi("WITHINGS", "No valid data from Withings API", measJson, "WARN");
@@ -386,80 +479,69 @@ export default {
         return;
       }
   
-      for (const grp of groups) {
-        const grpid = grp.grpid || `${userid}_${grp.date}`;
-        const date_iso = new Date(grp.date * 1000).toISOString();
-        logProcessing("GROUP", `Processing group ${grpid} for date ${date_iso}`);
+      // 🔹 NEW: Group measurements by date and calculate daily averages
+      const dailyMeasurements = groupMeasurementsByDate(groups);
+      const dailyAverages = calculateDailyAverages(dailyMeasurements);
+      
+      logData("AVERAGING", `📊 Grouped into ${Object.keys(dailyMeasurements).length} days, calculated ${Object.keys(dailyAverages).length} daily averages`, null, "DEBUG");
   
-        // 🔹 Process measures: calculate correct value with unit
-        const processed = {
-          userid,
-          grpid,
-          date_iso,
-          measures: grp.measures.map(m => ({
-            type: Number(m.type),
-            raw_value: m.value,
-            unit: Number(m.unit),
-            value: Number(m.value) * Math.pow(10, Number(m.unit))
-          }))
-        };
+      // 🔹 Process each day's averages
+      for (const [date, dayData] of Object.entries(dailyAverages)) {
+        const { fields: extractedData, averagedFields, measurementCount, grpids, latestGrpid } = dayData;
         
-        logData("MEASURES", `Processed measures for ${grpid} on ${date_iso}`, processed.measures);
-  
-        // 🔹 Extract configured fields
-        const extractedData = extractConfiguredFields(processed.measures);
-        logData("FIELDS", `Extracted configured fields for ${grpid} on ${date_iso}`, extractedData);
+        logData("FIELDS", `Processed daily averages for ${date}`, extractedData, "DEBUG");
         
         if (!Object.keys(extractedData).length) {
-          logData("FIELDS", `No configured fields found for ${grpid} on ${date_iso}, skipping`, null, "WARN");
+          logData("FIELDS", `No configured fields found for ${date}, skipping`, null, "WARN");
           continue;
         }
   
-        // 🔹 Determine which fields are new
-        const alreadySent = await getAlreadySentFields(userid, grpid, env);
+        // 🔹 Determine which fields are new (use latest grpid for duplicate checking)
+        const alreadySent = await getAlreadySentFields(userid, latestGrpid, env);
         const newFields = getNewFieldsToSend(extractedData, alreadySent);
         
         // Log summary of duplicates and new fields
         const duplicateCount = Object.keys(extractedData).length - Object.keys(newFields).length;
         if (duplicateCount > 0) {
-          logData("DUPLICATES", `${duplicateCount} fields already sent for ${grpid} on ${date_iso}`, Object.keys(extractedData).filter(field => alreadySent[field] === extractedData[field]));
+          logData("DUPLICATES", `${duplicateCount} fields already sent for ${date}`, Object.keys(extractedData).filter(field => alreadySent[field] === extractedData[field]), "DEBUG");
         }
         
         if (!Object.keys(newFields).length) {
-          logData("DUPLICATES", `All ${Object.keys(extractedData).length} fields already sent for ${grpid} on ${date_iso}, skipping`, null, "INFO");
+          logData("DUPLICATES", `All ${Object.keys(extractedData).length} fields already sent for ${date}, skipping`, null, "DEBUG");
           continue;
         }
         
-        logData("DUPLICATES", `${Object.keys(newFields).length} new fields to send for ${grpid} on ${date_iso}`, Object.keys(newFields));
+        logData("DUPLICATES", `${Object.keys(newFields).length} new fields to send for ${date}`, Object.keys(newFields), "DEBUG");
   
         // 🔹 Automatic retry Intervals send up to 2 attempts
         let attempts = 0;
         let sent = false;
         
-        logApi("INTERVALS", `Sending ${Object.keys(newFields).length} fields to Intervals for ${grpid} on ${date_iso}`);
+        logApi("INTERVALS", `Sending ${Object.keys(newFields).length} fields to Intervals for ${date} (${measurementCount} measurements averaged)`);
         
         while (attempts < 2 && !sent) {
           attempts++;
           
-          const sendRes = await sendToIntervals({ date_iso, wellnessData: newFields }, env);
+          const sendRes = await sendToIntervals({ date_iso: dayData.date_iso, wellnessData: newFields }, env);
           
           if (sendRes.ok) {
-            logApi("INTERVALS", `✅ Successfully sent to Intervals: ${Object.keys(newFields).join(', ')} for ${grpid} on ${date_iso}`, newFields);
-            await saveSuccessfulFields(userid, grpid, newFields, sendRes.status, env);
+            logApi("INTERVALS", `✅ Successfully sent to Intervals: ${Object.keys(newFields).join(', ')} for ${date}`, newFields);
+            await saveSuccessfulFields(userid, latestGrpid, newFields, sendRes.status, env);
             
             // Track successful send for Telegram notification
             results.push({
-              grpid,
-              date_iso,
+              date,
               fields: newFields,
+              averagedFields,
+              measurementCount,
               status: sendRes.status
             });
             
             sent = true;
           } else {
-            log("WARN", `❌ Intervals send failed (attempt ${attempts}) for ${grpid} on ${date_iso}`, { status: sendRes.status, text: sendRes.text });
+            log("WARN", `❌ Intervals send failed (attempt ${attempts}) for ${date}`, { status: sendRes.status, text: sendRes.text });
             if (attempts < 2) {
-              logApi("INTERVALS", `Retrying in 2 seconds for ${grpid} on ${date_iso}`);
+              logApi("INTERVALS", `Retrying in 2 seconds for ${date}`, null, "DEBUG");
               await new Promise(r => setTimeout(r, 2000)); // brief delay between retries
             }
           }
@@ -467,15 +549,18 @@ export default {
   
         // 🔹 If still failed → save to KV for future manual retry
         if (!sent) {
-          logData("RETRIES", `All retries failed for ${grpid} on ${date_iso}, saving for manual retry`, null, "ERROR");
-          await env.MY_KV.put(`retry_${userid}_${grpid}`, JSON.stringify({
+          logData("RETRIES", `All retries failed for ${date}, saving for manual retry`, null, "ERROR");
+          await env.MY_KV.put(`retry_${userid}_${latestGrpid}`, JSON.stringify({
             attemptAt: new Date().toISOString(),
-            fields: newFields
+            fields: newFields,
+            date,
+            measurementCount,
+            averagedFields
           }));
         }
       }
       
-      logData("MEASUREMENTS", `✅ Completed processing ${groups.length} groups for userid: ${userid}`);
+      logData("MEASUREMENTS", `✅ Completed processing ${Object.keys(dailyAverages).length} days for userid: ${userid}`);
       
       // Send Telegram notification with results
       await sendTelegramNotification(formatTelegramMessage(userid, results), env);
@@ -553,4 +638,3 @@ export default {
     const text = await resp.text();
     return { ok: resp.ok, status: resp.status, text };
   }
-  
