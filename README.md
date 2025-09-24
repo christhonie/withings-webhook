@@ -440,4 +440,4 @@ You can modify the notification behavior in the TELEGRAM\_CONFIG object:
 📄 License
 ----------
 
-Open-source project. Modification and reuse allowed.
+All contents of this repository (code, documentation, and diagrams) are released under the [MIT](./LICENSE) license.
