@@ -1,109 +1,250 @@
-                           ┌─────────────────────────┐
-                           │ HTTP Request             │
-                           └──────────────┬──────────┘
-                                          │
-             ┌────────────────────────────┴────────────────────────────┐
-             │                                                       │
-       ┌─────────────┐                                        ┌─────────────┐
-       │ HEAD?       │                                        │ POST?       │
-       └─────┬───────┘                                        └─────┬───────┘
-         yes │ no                                                  yes│ no
-             ▼                                                        ▼
-       ┌─────────────┐                                        ┌─────────────┐
-       │ Return 200  │                                        │ Return 400  │
-       └─────────────┘                                        └─────────────┘
-                                                                       │
-                                                                       ▼
-                                                        ┌─────────────────────────────┐
-                                                        │ Extract payload from formData│
-                                                        └──────────────┬────────────┘
-                                                                       │
-                                                        ┌──────────────┴────────────┐
-                                                        │ action=subscribe?         │
-                                                        └─────┬─────────────┬──────┘
-                                                              │ yes        │ no
-                                                              ▼            ▼
-                                                ┌─────────────────┐  ┌──────────────┐
-                                                │ Return {status:0}│  │ action=notify?│
-                                                └─────────────────┘  └─────┬─────────┘
-                                                                                 │ no
-                                                                                 ▼
-                                                                        ┌─────────────┐
-                                                                        │ Return 400  │
-                                                                        └─────────────┘
-                                                                                 │ yes
-                                                                                 ▼
-                                                                  ┌──────────────────────┐
-                                                                  │ Validate payload     │
-                                                                  │ (userid, start, end)│
-                                                                  └───────┬──────────────┘
-                                                                          │ error
-                                                                          ▼
-                                                                   ┌─────────────┐
-                                                                   │ Return 400  │
-                                                                   └─────────────┘
-                                                                          │ ok
-                                                                          ▼
-                                                             ┌───────────────────────────┐
-                                                             │ Return "OK" immediately   │
-                                                             │ ctx.waitUntil(handleNotify)│
-                                                             └──────────────┬────────────┘
-                                                                            │
-                                            ┌───────────────────────────────┬──────────────────────────────┐
-                                            │                               │                              │
-                                ┌───────────────────┐           ┌───────────────────┐         ┌────────────────────┐
-                                │ getValidAccessToken│           │ Refresh token?    │         │ Log error & stop   │
-                                └─────────┬─────────┘           └─────────┬─────────┘         └────────────────────┘
-                                          │ ok                            │ error
-                                          ▼                                ▼
-                              ┌─────────────────────────┐        ┌─────────────────────────┐
-                              │ Call Withings API       │        │ Auto retry refresh      │
-                              │ measure?action=getmeas  │        │ up to 3 attempts        │
-                              └─────────────┬───────────┘        └─────────────┬───────────┘
-                                            │ error                        │ ok
-                                            ▼                                ▼
-                                      ┌─────────────┐                  ┌─────────────┐
-                                      │ Log & stop  │                  │ Process groups│
-                                      └─────────────┘                  └─────────────┬─┘
-                                                                                  │
-                                                                                  ▼
-                                                                        ┌─────────────────────┐
-                                                                        │ Extract configured  │
-                                                                        │ fields & convert    │
-                                                                        │ units (Math.pow)    │
-                                                                        └─────────────┬─────────┘
-                                                                                      │
-                                                                                      ▼
-                                                                        ┌─────────────────────┐
-                                                                        │ Check already sent  │
-                                                                        │ fields (KV)         │
-                                                                        └─────────────┬─────────┘
-                                                                                      │
-                                                                                      ▼
-                                                                        ┌─────────────────────┐
-                                                                        │ New fields to send? │
-                                                                        └───────┬─────────────┘
-                                                                                │ no
-                                                                                ▼
-                                                                       ┌─────────────┐
-                                                                       │ Next group  │
-                                                                       └─────────────┘
-                                                                                │ yes
-                                                                                ▼
-                                                               ┌─────────────────────────────┐
-                                                               │ Send data to Intervals      │
-                                                               │ Auto retry 2 attempts       │
-                                                               │ with 2s delay between retry │
-                                                               └──────────────┬────────────┘
-                                                                              │ success
-                                                                              ▼
-                                                               ┌────────────────────┐
-                                                               │ Save sent fields   │
-                                                               │ in KV (success)    │
-                                                               └──────────────┬──────┘
-                                                                              │ failed after retry
-                                                                              ▼
-                                                               ┌─────────────────────────────┐
-                                                               │ Save to KV for manual retry │
-                                                               │ (retry_${userid}_${grpid})  │
-                                                               └─────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                  HTTP REQUEST (entrypoint)                                                   │
+│                                  Accepts only: HEAD (health) and POST (Withings callbacks)                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                       │
+                     ┌─────────────────────────────────┴─────────────────────────────────┐
+                     │                                                                   │
+               ┌─────▼─────┐                                                         ┌───▼────┐
+               │   HEAD?   │───────────────────┌─────────────────────────────────────│  POST? │
+               └─────┬─────┘                   │                                     └───┬────┘
+                     │ yes                     │ no                                      │ yes
+                     ▼                         ▼                                         │
+     ┌──────────────────────┐       ┌──────────────────────┐                             │  
+     │ Return 200 OK (200)  │       │ Return 400 / 405 etc │                             │  
+     │ (health check)       │       │ (reject non-POST)    │                             │  
+     └──────────────────────┘       └──────────────────────┘                             │  
+                                                                                         │  
+                                                                                         │
+    When POST:                                                                           ▼
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ Extract payload from formData → payload object (keys typically: action, userid, startdate, enddate, ...)               │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                       │
+                         ┌─────────────────────────────┴─────────────────────────────────┐
+                         │                        ACTION?                                │
+                         │ payload.action || default "notify"                            │
+                         └──────────┬────────────────────┬───────────────────────────┬───┘
+                                    │                    │                           │
+                              "subscribe"            "notify"                   other/unknown
+                                    │                    │                           │
+                                    ▼                    ▼                           ▼
+                 ┌─────────────────────────┐  ┌─────────────────────────┐  ┌────────────────────────┐
+                 │ Return JSON {status:0}  │  │ Continue processing     │  │ Return 400 Invalid     │
+                 │ (subscribe handshake)   │  │ (validate payload)      │  │ action: stop           │
+                 └─────────────────────────┘  └─────────────────────────┘  └────────────────────────┘
+                                                         │
+                                   ┌─────────────────────┴──────────────────────┐
+                                   │ VALIDATE PAYLOAD (centralized validate)    │
+                                   │ - userid: required, string of digits       │
+                                   │ - startdate: optional, default "0", digits │
+                                   │ - enddate: optional, default now (unix s)  │
+                                   │ - enddate >= startdate                     │
+                                   │ On validation error → Return 400 + message │
+                                   └─────────────────────┬──────────────────────┘
+                                                  valid? │
+                                                         │
+                                                     ┌───┴─────────────────────────────┐
+                                                 YES │                                 │ NO
+                                                     ▼                                 ▼
+  ┌────────────────────────────────────────────────────────────────────────────┐    ┌────────────────────────────┐
+  │ IMMEDIATE RESPONSE TO WITHINGS                                             │    │ Return ERROR 400 + message │
+  │ - Return "OK" 200 immediately (fast acknowledgement)                       │    └────────────────────────────┘                   
+  │ - Start async processing: ctx.waitUntil(handleNotify(payload, env))        │    
+  │ Rationale: avoid timeouts from Withings; process heavy work asynchronously │    
+  └────────────────────────────────────────────────────────────────────────────┘    
+                                                         │
+                                                         ▼
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ ASYNC: handleNotify(payload, env) — main processing flow                                                               │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                         │
+               ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+               │                                                                                             │
+               ▼                                                                                             ▼
+┌───────────────────────────────────────────┐────────────────────────────────────────────┐     ┌────────────────────────────┐
+│ Step A: Get access token                  │ Step B: Call Withings measure API          │     │ Global try/catch & logging │
+│ getValidAccessToken(userid, env)          │ (POST https://wbsapi.withings.net/measure) │     │ - All internal errors are  │
+│ - Look up token_data_${userid} in KV      │ - body: action=getmeas, startdate, enddate │     │   caught, logged and can   │
+│ - If token exists && expires_at > now +60s│ - Authorization: Bearer <access_token>     │     │   trigger Telegram alerts  │
+│   → return cached access_token            │ - Parse JSON response                      │     └────────────────────────────┘
+│ - Else → refreshAccessToken(userid, env)  │                                            │
+│                                           │                                            │
+│                                           │                                            │
+└──────────────┬────────────────────────────┴────────────────────────────────────────────┘
+               │
+               ▼
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ refreshAccessToken(userid, env) — refresh logic (automatic retry on 601)                                               │
+│ - Read refresh_${userid} from KV (must exist)                                                                          │
+│ - POST https://wbsapi.withings.net/v2/oauth2 with:                                                                     │
+│     action=requesttoken, grant_type=refresh_token, client_id, client_secret, refresh_token                             │
+│ - Parse tokenJson                                                                                                      │
+│ Retry policy:                                                                                                          │
+│ - If tokenJson.status === 601 (rate limited / too fast) → wait tokenJson.body?.wait_seconds || default 10s,            │
+│   then retry up to maxRetries (default 3)                                                                              │
+│ - If tokenJson.status !== 0 or missing body.access_token → throw error (refresh failed)                                │
+│ On success:                                                                                                            │
+│ - Build tokenData { access_token, refresh_token, expires_at, token_type, updated_at }                                  │
+│ - KV put token_data_${userid} = JSON.stringify(tokenData)                                                              │
+│ - KV put refresh_${userid} = tokenJson.body.refresh_token                                                              │
+│ - return access_token                                                                                                  │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+               │
+       success │       failure
+          ┌────┴──────────┐
+          ▼               ▼
+   ┌───────────────┐   ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ Use token to  │   │ If refresh completely fails:                                                                       │
+   │ continue      │   │ - Log error                                                                                        │
+   └───────────────┘   │ - Optionally send Telegram error notification (if TELEGRAM_CONFIG.enabled)                          │
+                       │ - Stop processing this notify (return from handleNotify)                                            │
+                       └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+If we have a valid access token, proceed:
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ Call Withings `measure?action=getmeas` with startdate and enddate                                                      │
+  │ - If network error or non-200 → log and optionally Telegram alert; stop processing this notify                         │
+  │ - If JSON.status !== 0 → log details (measJson), optionally Telegram alert; stop processing this notify                │
+  │ - Else collect `measuregrps` array from measJson.body                                                                  │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ PRE-PROCESS: Convert and normalize groups                                                                              │
+  │ For each group (grp):                                                                                                  │
+  │ - grpid = grp.grpid || `${userid}_${grp.date}`                                                                         │
+  │ - date_iso = new Date(grp.date * 1000).toISOString()                                                                   │
+  │ - measures[] = grp.measures.map(m => ({                                                                                │
+  │       type: Number(m.type), raw_value: m.value, unit: Number(m.unit),                                                  │
+  │       value: Number(m.value) * Math.pow(10, Number(m.unit))                                                            │
+  │   }))                                                                                                                  │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ GROUPING: groupMeasuresByDate                                                                                          │
+  │ - Build map dateKey (YYYY-MM-DD) -> [groups...]                                                                        │
+  │ - This allows computing day-level averages across multiple measuregrps on same day                                     │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ DAILY AVERAGES: calculateDayAverages                                                                                   │
+  │ For each dateKey:                                                                                                      │
+  │ - For each group in dayGroups, extract configured fields via FIELD_MAPPING (matching m.type -> withingsType)           │
+  │ - Use config.decimals for rounding/truncation                                                                          │
+  │ - Compute average = sum / count for each field present                                                                 │
+  │ - Build `daily` object: { date: YYYY-MM-DD, date_iso: dateT12:00:00Z, fields: { fieldName: average },                  │
+  │                          measurementCount, grpids: [list], latestGrpid: most recent grpid }                            │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ SEND LOOP: for each daily in dailyAverages (ascending date)                                                            │
+  │ - latestGrpid = daily.latestGrpid                                                                                      │
+  │ - extractedData = daily.fields                                                                                         │
+  │ - sentKey = `sent_${userid}_${latestGrpid}`                                                                            │
+  │ - alreadySent = try parse env.MY_KV.get(sentKey) -> { fields: {...} } or {}                                            │
+  │ - newFields = fields that are not present in alreadySent OR have different value (strict equality on numeric)          │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+     ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+     │ Decision: newFields empty?                                                                                         │
+     └────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                  │ yes                                                                                  │ no
+                  ▼                                                                                      ▼
+        ┌──────────────────────┐                                                               ┌───────────────────────────────────────┐
+        │ Skip this date       │                                                               │ Attempt sending to Intervals          │
+        │ (log "no new fields")│                                                               │ (buildIntervalsPayload → PUT request) │
+        └──────────────────────┘                                                               └───────────────────────────────────────┘
+                                                                                                   │
+                                                                                       ┌───────────┴──────────┐
+                                                                                       │ Automatic retry loop │
+                                                                                       │ maxAttempts = 2      │
+                                                                                       │ delayBetween = 2000ms│
+                                                                                       └───────┬──────────────┘
+                                                                                               │
+                                                                                      attempt 1│
+                                                                                               ▼
+                                                                                ┌───────────────────────────────────────────┐
+                                                                                │ sendToIntervals(...)                      │
+                                                                                │ - PUT /athlete/{id}/wellness/{YYYY-MM-DD} │
+                                                                                │ - Authorization: Basic <API_KEY>          │
+                                                                                └──────────────┬────────────────────────────┘
+                                                                                               │
+                                                                                      success? │
+                                                                                 ┌──────────┬──┴────────────────────┐
+                                                                                 │ yes      │ no     (retry/failed) │
+                                                                                 ▼          ▼                       ▼
+                                                            ┌─────────────────────────┐  ┌─────────────────────────────┐
+                                                            │ saveSuccessfulFields    │  │ wait delay (2s) then retry  │
+                                                            │ - env.MY_KV.put(sentKey)│  │ (attempt 2)                 │
+                                                            │ - include lastSentAt    │  └─────────────────────────────┘
+                                                            └────────────┬────────────┘
+                                                                         │
+                                                           push entry for Telegram (success)
+                                                                         │
+                                                                         ▼
+                                                             (continue next date)
+
+ If both attempts fail:
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Save "retry payload" in KV for later reprocessing:                                                                         │
+ │ - key: `retry_${userid}_${latestGrpid}`                                                                                    │
+ │ - value: { attemptAt, fields: newFields, lastError: { status, text }, retriesAttempted: 2 }                                │
+ │ Rationale: do not block worker with long retry loops; allow external retry process (cron, admin UI or manual)              │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Post-processing after all dates processed:                                                                                 │
+ │ - Build summary object: list of dates processed, successes, failures, counts                                               │
+ │ - Log full summary                                                                                                         │
+ │ - If TELEGRAM_CONFIG.enabled → send Telegram message with summary (and optionally include details/errors depending on cfg) │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Global error handling (inside handleNotify):
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Any uncaught exception within handleNotify:                                                                                │
+ │ - Catch in global try/catch → log ERROR                                                                                    │
+ │ - If TELEGRAM_CONFIG.enabled → send an error notification with stack/message                                               │
+ │ - Stop processing this notify (do not rethrow)                                                                             │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Configuration points & KV keys referenced:
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Configs:                                                                                                                   │
+ │ - LOG_CONFIG: { level, enableDebug, categories }                                                                           │
+ │ - TELEGRAM_CONFIG: { enabled, botToken, chatId, includeData, includeErrors }                                               │
+ │ - RETRY settings: refreshRetryMax=3 (refresh token), intervalsRetryMax=2 (send to Intervals), retryDelayMs=2000            │
+ │                                                                                                                            │
+ │ KV keys used:                                                                                                              │
+ │ - token_data_${userid}  → JSON { access_token, refresh_token, expires_at, token_type, updated_at }                         │
+ │ - refresh_${userid}     → refresh_token                                                                                    │
+ │ - sent_${userid}_${grpid} → JSON { lastSentAt, status, fields: { ... } }                                                   │
+ │ - retry_${userid}_${grpid} → JSON { attemptAt, fields, res?, retriesAttempted }                                            │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+IMPORTANT IMPLEMENTATION DETAILS (for reference / debugging):
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ - Value calculation for Withings measures: value = raw_value * 10^(unit)                                                   │
+ │ - FIELD_MAPPING maps logical field names → { withingsType, intervalsField, decimals }                                      │
+ │ - Use latestGrpid to identify the "canonical" group for deduplication and KV keying                                        │
+ │ - Daily averages are rounded to config.decimals to avoid floating noise                                                    │
+ │ - ctx.waitUntil(handler) ensures the Worker responds immediately while continuing processing asynchronously                │
+ │ - Keep KV writes minimal and atomic: write sent_* only on confirmed success                                                │
+ │ - Failures are recorded and kept in KV for external reprocessing instead of indefinite immediate retries                   │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Legend / Symbols:
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ - Boxes: synchronous steps or actions                                                                                      │
+ │ - Decision points are presented as headings with branches (yes/no)                                                         │
+ │ - KV indicates Cloudflare Workers KV namespace                                                                             │
+ │ - TELEGRAM_CONFIG determines if/when notifications are sent                                                                │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Optional Extras you can add to the flow (recommended):
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ - Periodic worker or Cron Trigger to process `retry_*` keys automatically (attempt resend with exponential backoff)        │
+ │ - Admin endpoint to list failed retries, allow manual re-sending or purge                                                  │
+ │ - Metrics export (counts per day, retry counts, failures) to Prometheus / external monitoring                              │
+ │ - Rate-limit protection around refreshAccessToken to avoid hammering Withings API                                          │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
