@@ -431,11 +431,56 @@ You can modify the notification behavior in the TELEGRAM\_CONFIG object:
 
 ### Troubleshooting Common Issues
 
-*   **"Invalid userid"**: Ensure userid is a numeric string
-*   **"Token refresh failed"**: Check if refresh token has expired (6 months)
-*   **"All retries failed"**: Check Intervals.icu API status and credentials
-*   **No data sent**: Verify field mapping matches your Withings device capabilities
-*   **Timestamp issues**: Remember Withings uses Unix timestamps in **seconds**, not milliseconds
+- **"Invalid userid"**  
+  Ensure `userid` is a numeric string.
+
+- **"Token refresh failed"**  
+  Check if the refresh token has expired (valid for 6 months).
+
+- **"All retries failed"**  
+  Check Intervals.icu API status and credentials.
+
+- **No data sent**  
+  Verify field mapping matches your Withings device capabilities.
+
+- **Timestamp issues**  
+  Remember Withings uses Unix timestamps in **seconds**, not milliseconds.
+
+- **"Not implemented" (status 2554)**  
+  This error happens if you call the wrong endpoint.  
+  Always use:
+  https://wbsapi.withings.net/notify
+  (⚠️ do not use `/v2/notify`)
+
+- **Old callback URL still shown in `action=list` after GUI callback URL edit**  
+  The Withings Developer portal shows the **global callback URL** for your app,  
+  but API subscriptions (`action=list`) display the URL that was saved at the moment of `subscribe`.  
+  Updating the portal does not automatically update old subscriptions.  
+
+  **Solution:** Revoke the old subscription and create a new one with the updated URL.  
+  (Access/refresh tokens are unaffected.)
+
+  Example workflow:
+  ```bash
+  # 1. List current subscription(s)
+  curl -X POST "https://wbsapi.withings.net/notify" \
+    -H "Authorization: Bearer <ACCESS_TOKEN>" \
+    -d "action=list&appli=1"
+
+  # 2. Revoke old subscription (use appli + old callbackurl from step 1)
+  curl -X POST "https://wbsapi.withings.net/notify" \
+    -H "Authorization: Bearer <ACCESS_TOKEN>" \
+    -d "action=revoke&appli=1&callbackurl=https://old-url/withings"
+
+  # 3. Subscribe again with the new callback URL
+  curl -X POST "https://wbsapi.withings.net/notify" \
+    -H "Authorization: Bearer <ACCESS_TOKEN>" \
+    -d "action=subscribe&appli=1&callbackurl=https://new-url/withings&comment=myapp"
+
+  # 4. Verify subscription now points to the correct callback
+  curl -X POST "https://wbsapi.withings.net/notify" \
+    -H "Authorization: Bearer <ACCESS_TOKEN>" \
+    -d "action=list&appli=1"
 
 📄 License
 ----------
