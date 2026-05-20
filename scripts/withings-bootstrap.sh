@@ -29,6 +29,11 @@ CALLBACK_URL="${WITHINGS_CALLBACK_URL:-$WORKER_URL}"
 # appli=1 -> body scale / weight & body-composition measurements.
 APPLI=1
 
+# Temp file for KV values, cleaned up on exit (declared globally so the EXIT trap
+# can still see it after the command function returns).
+TMP_FILE=""
+trap 'rm -f "$TMP_FILE"' EXIT
+
 load_env() {
   [ -f "$ENV_FILE" ] || { echo "ERROR: $ENV_FILE not found. Fill it in first." >&2; exit 1; }
   set -a; # shellcheck disable=SC1090
@@ -83,15 +88,15 @@ cmd_token() {
   now="$(date +%s)"
   expires_at=$(( now + expires_in ))
 
-  local tmp; tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+  TMP_FILE="$(mktemp)"
   jq -n \
     --arg a "$access" --arg r "$refresh" --argjson e "$expires_at" \
     --arg t "$token_type" --arg u "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-    '{access_token:$a, refresh_token:$r, expires_at:$e, token_type:$t, updated_at:$u}' > "$tmp"
+    '{access_token:$a, refresh_token:$r, expires_at:$e, token_type:$t, updated_at:$u}' > "$TMP_FILE"
 
-  kv_put_file "token_data_${userid}" "$tmp"
-  printf '%s' "$refresh" > "$tmp"
-  kv_put_file "refresh_${userid}" "$tmp"
+  kv_put_file "token_data_${userid}" "$TMP_FILE"
+  printf '%s' "$refresh" > "$TMP_FILE"
+  kv_put_file "refresh_${userid}" "$TMP_FILE"
 
   echo "✅ Seeded KV for userid=${userid} (access token valid ${expires_in}s; auto-refreshed thereafter)."
   echo "$userid" > "$ROOT_DIR/.withings-userid"
