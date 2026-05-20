@@ -217,8 +217,10 @@ export default {
           ctx.waitUntil(handleSleepNotify(payload, env));
         } else if (appli === "52") {
           // "Inflate done": the sleep mat finished calibrating after power-up/restart —
-          // a de-facto "device online" signal. Log only (no Intervals push).
+          // a de-facto "device online" signal. Persist a check-in record to KV (so it is
+          // visible after the fact, not just in live logs) and optionally ping Telegram.
           log("INFO", `🛏️ Sleep mat online (inflate done) for userid: ${payload.userid}`);
+          ctx.waitUntil(recordSleepCheckin(payload.userid, env));
           if (TELEGRAM_CONFIG.enabled) {
             const ts = new Date().toISOString().slice(0, 19).replace('T', ' ');
             ctx.waitUntil(sendTelegramNotification(`🛏️ <b>Withings Sleep mat online</b>\n👤 User: ${payload.userid}\n⏰ Time: ${ts}`, env));
@@ -810,6 +812,22 @@ export default {
     const existing = await env.MY_KV.get(sentKey);
     if (!existing) return {};
     try { return JSON.parse(existing).fields || {}; } catch { return {}; }
+  }
+
+  // 🔧 Persist a sleep-mat check-in (appli=52 inflate-done) so it's queryable later.
+  // KV key: checkin_${userid} -> { lastCheckinAt, count }.
+  async function recordSleepCheckin(userid, env) {
+    const key = `checkin_${userid}`;
+    let count = 0;
+    try {
+      const existing = await env.MY_KV.get(key);
+      if (existing) count = JSON.parse(existing).count || 0;
+    } catch { /* ignore parse errors, start fresh */ }
+    await env.MY_KV.put(key, JSON.stringify({
+      lastCheckinAt: new Date().toISOString(),
+      count: count + 1,
+      appli: 52
+    }));
   }
   
   function getNewFieldsToSend(extractedData, alreadySent) {

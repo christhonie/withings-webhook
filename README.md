@@ -486,6 +486,7 @@ Main keys:
 | `retry_${userid}_${grpid}` | Body data to send manually if retry failed |
 | `sent_${userid}_sleep_${date}` | Sleep fields already sent for a night (YYYY-MM-DD) |
 | `retry_${userid}_sleep_${date}` | Sleep data to send manually if retry failed |
+| `checkin_${userid}` | Last sleep-mat check-in (`appli=52` inflate-done): `lastCheckinAt`, `count` |
 
 📱 Telegram Notifications
 -------------------------
