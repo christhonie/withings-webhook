@@ -300,7 +300,7 @@ Create one custom wellness field per row below. **The `Code` is the only value t
 Notes on the columns:
 
 - **Format** uses [d3-format](https://d3js.org/d3-format) notation: `.2f` = 2 decimals, `.3f` = 3 decimals, `.1f` = 1 decimal, `.0f` = integer. Keep it consistent with the **Decimals** column in the mapping table above.
-- **Suffix** includes a **leading space** (`" kg"`) so values render as `83.35 kg`, not `83.35kg`. A `—` means leave that field blank.
+- `—` means leave that field blank.
 - ⚠️ **The OK button stays greyed out until the `Example` value matches the `Format`.** For example, with format `.2f` the Example must have exactly two decimals (`61.82`). The validation message only appears **after you click into (touch) the Example field** — so if **OK** is disabled and nothing looks wrong, focus the Example field and correct its decimals to match the format.
 - **Only create the fields your scale actually reports.** Most Body / Body+ scales send the first four (muscle, water, bone, lean mass). Visceral Fat, BMR and Metabolic Age (Withings types 170 / 226 / 227) come from higher-end models only — create them only if your scale sends them; otherwise they simply stay empty.
 
