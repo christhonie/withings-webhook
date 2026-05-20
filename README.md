@@ -7,9 +7,10 @@ This project implements a **Cloudflare Worker** that receives notifications from
 ----------------
 
 *   Receives **POST** notifications from Withings (notify) and handles subscription (subscribe)
+*   **Routes by notification category (`appli`)**: body composition (`appli=1`), **sleep summaries (`appli=44`)**, and a **sleep-mat check-in** log (`appli=52`, device online after restart)
 *   Complete payload validation: userid, startdate, enddate
 *   Obtains valid **access token** from KV or automatic refresh
-*   Calls Withings API measure?action=getmeas to retrieve measurements
+*   Calls Withings API measure?action=getmeas (body) and **v2/sleep?action=getsummary (sleep)** to retrieve data
 *   **Daily averaging**: Automatically groups multiple measurements per day and calculates averages
 *   Extracts configured fields (weight, muscle mass, body fat, etc.)
 *   Sends data to **Intervals.icu** with automatic retry (2 attempts)
@@ -96,11 +97,12 @@ Before the Worker can function, you need to obtain the initial OAuth tokens for 
 
 1.  **Visit the OAuth URL:**
 ```js
-https://account.withings.com/oauth2\_user/authorize2?response\_type=code&client\_id=YOUR\_CLIENT\_ID&redirect\_uri=YOUR\_REDIRECT\_URI&scope=user.metrics&state=random\_string
+https://account.withings.com/oauth2\_user/authorize2?response\_type=code&client\_id=YOUR\_CLIENT\_ID&redirect\_uri=YOUR\_REDIRECT\_URI&scope=user.metrics,user.activity,user.sleepevents&state=random\_string
 ```
   *   Replace YOUR\_CLIENT\_ID with your actual client ID
   *   Replace YOUR\_REDIRECT\_URI with your configured redirect URI
   *   The user will be redirected to your redirect URI with a code parameter
+  *   **Scopes:** `user.metrics` (weight/body), `user.activity` (sleep summaries), `user.sleepevents` (sleep-mat device events). If you previously authorized with only `user.metrics`, you **must** re-run this flow to add sleep — appending scope does not upgrade an existing token. See the [Sleep Tracking](#-sleep-tracking-sleep-analyzer--sleep-mat) section.
 
 2.  **Extract the code from the redirect URL:**
    *   The code will be in the URL parameter: ?code=ABC123...
@@ -225,8 +227,9 @@ const LOG_CONFIG = {
 --------------------
 
 *   worker.js → main Worker code
-    *   fetch → HTTP entry point
-    *   handleNotify(payload, env) → async notification processing
+    *   fetch → HTTP entry point (routes by `appli`: body / sleep / device check-in)
+    *   handleNotify(payload, env) → async body-composition processing (`appli=1`)
+    *   handleSleepNotify(payload, env) → **NEW**: async sleep processing (`appli=44`, v2/sleep getsummary)
     *   getValidAccessToken(userid, env) → token retrieval with caching
     *   refreshAccessToken(userid, env) → token refresh with automatic retry
     *   groupMeasurementsByDate(groups) → **NEW**: groups measurements by date
@@ -306,6 +309,134 @@ Notes on the columns:
 
 For what each metric means, see Withings’ [body composition & BIA guide](https://support.withings.com/hc/en-us/articles/22480153133841-Body-Smart-Learn-more-about-body-composition-and-bioelectrical-impedance-analysis-BIA).
 
+😴 Sleep Tracking (Sleep Analyzer / Sleep Mat)
+----------------------------------------------
+
+The Worker also ingests **sleep** from Withings under-mattress devices (*Withings Sleep* /
+*Sleep Mat*, *Sleep Analyzer*, *Sleep Rx*). Sleep uses a **different notification category and
+API endpoint** than body composition:
+
+* Withings sends a notification with **`appli=44`** ("sleep summary") when a night's data is ready.
+* The Worker then calls **`https://wbsapi.withings.net/v2/sleep?action=getsummary`** (not `measure/getmeas`).
+* Each night maps to one Intervals **wellness** record (built-in `sleepSecs`/`sleepScore`/… plus custom `Withings*` fields).
+
+### ⚠️ Required: re-authorize with the sleep scopes
+
+Sleep needs OAuth scopes the original body-only setup does not have:
+
+| Scope | Enables |
+|-------|---------|
+| `user.metrics` | Weight / body composition (`appli=1`) |
+| `user.activity` | **Sleep summaries** (`appli=44`, `v2/sleep`) |
+| `user.sleepevents` | Sleep-mat device events: **inflate-done check-in** (`appli=52`), bed in/out (`50`/`51`) |
+
+**Appending a scope does not upgrade an existing token.** If you set the integration up for
+body composition only, you must **re-run the OAuth flow** (Initial Setup → Steps 1–3) to mint a
+token carrying `user.activity`+`user.sleepevents`, then re-subscribe. The helper does both:
+
+```bash
+./scripts/withings-bootstrap.sh authorize        # URL now requests all three scopes
+./scripts/withings-bootstrap.sh token <code>     # re-seeds KV and subscribes appli 1, 44, 52
+./scripts/withings-bootstrap.sh list <userid>    # verify appli 1, 44, 52 subscriptions
+```
+
+If the token is missing `user.activity`, the Worker logs an explicit warning
+(`Sleep getsummary failed … likely missing 'user.activity' scope`) instead of failing silently.
+
+### Device check-in (`appli=52`) — and the scale has none
+
+When the Sleep Mat powers on or restarts it re-inflates/calibrates its sensor, which fires an
+**`appli=52` ("inflate done")** notification — a de-facto "device online" signal. The Worker
+logs this (and, if Telegram is enabled, pings you) but pushes nothing to Intervals. **The scale
+has no equivalent** — it only notifies (`appli=1`) when a new measurement is taken, never on
+connect.
+
+### Sessions, naps and dates
+
+* Brief awakenings / bathroom trips stay within **one** night session (counted as
+  `WithingsWakeupCount` / `WithingsWakeAfterSleep` / `WithingsOutOfBedCount`). Withings only
+  starts a separate session after a *sustained* absence.
+* If a night is split into multiple series, the Worker **aggregates per night date**: it **sums**
+  durations & counts and takes scalar metrics (score, efficiency, HR/RR/HRV) from the **longest**
+  series. (Daytime naps that land on the same date are currently folded into the night total.)
+* The night/date comes from Withings’ own `series[].date` (in your account timezone), so sessions
+  that start after midnight are dated correctly. Stored under wellness date `YYYY-MM-DD`.
+
+### Device field availability (which device reports what)
+
+Create only the fields **your** device reports — others are simply dropped (harmless). Run a real
+sleep sync (or `getsummary`) once to confirm your device's set.
+
+| Field group | Withings Sleep / Sleep Mat | Sleep Analyzer (EU/AU) | Sleep Rx (US) |
+|---|:---:|:---:|:---:|
+| Stages, score, efficiency, latency, WASO, wakeups, time-in-bed | ✅ | ✅ | ✅ |
+| HR (avg/min/max), respiration (avg/min/max), HRV (rmssd) | ✅ | ✅ | ✅ |
+| Snoring + episodes, breathing-disturbance intensity | ✅ | ✅ | ✅ |
+| **Apnea-Hypopnea Index (`apnea_hypopnea_index`)** | ❌ | ✅ | ❌ |
+
+### Sleep field mapping
+
+Durations are stored in **minutes** for custom fields (the built-in `sleepSecs` stays seconds).
+`★` = custom wellness field you must create.
+
+| Withings field | Intervals field | Built-in / Custom | Unit |
+|---|---|---|---|
+| total_sleep_time | `sleepSecs` | built-in | seconds |
+| sleep_score | `sleepScore` | built-in | 0–100 |
+| hr_average | `avgSleepingHR` | built-in | bpm |
+| rr_average | `respiration` | built-in | br/min |
+| rmssd | `hrv` | built-in | ms |
+| deepsleepduration | `WithingsSleepDeep` ★ | custom | min |
+| lightsleepduration | `WithingsSleepLight` ★ | custom | min |
+| remsleepduration | `WithingsSleepREM` ★ | custom | min |
+| total_timeinbed | `WithingsTimeInBed` ★ | custom | min |
+| sleep_latency | `WithingsSleepLatency` ★ | custom | min |
+| wakeup_latency | `WithingsWakeupLatency` ★ | custom | min |
+| wakeupduration (WASO) | `WithingsWakeAfterSleep` ★ | custom | min |
+| wakeupcount | `WithingsWakeupCount` ★ | custom | count |
+| out_of_bed_count | `WithingsOutOfBedCount` ★ | custom | count |
+| nb_rem_episodes | `WithingsRemEpisodes` ★ | custom | count |
+| sleep_efficiency | `WithingsSleepEfficiency` ★ | custom | % |
+| snoring | `WithingsSnoring` ★ | custom | min |
+| snoringepisodecount | `WithingsSnoringEpisodes` ★ | custom | count |
+| breathing_disturbances_intensity | `WithingsBreathingDisturbance` ★ | custom | score |
+| hr_min | `WithingsSleepHRMin` ★ | custom | bpm |
+| hr_max | `WithingsSleepHRMax` ★ | custom | bpm |
+| rr_min | `WithingsRespirationMin` ★ | custom | br/min |
+| rr_max | `WithingsRespirationMax` ★ | custom | br/min |
+| apnea_hypopnea_index | `WithingsApneaIndex` ★ | custom (Analyzer only) | /hr |
+
+### Sleep custom wellness fields to create
+
+Create these the same way as the body-composition custom fields (wellness entry dialog →
+**Fields** → **+**; Code must match **exactly**; the **Example** must match the **Format** or
+the OK button stays greyed out). Suffix shown with a leading space.
+
+| Name | Code | Type | Unit | Min | Max | Format | Suffix | Example | Device |
+|---|---|---|---|---|---|---|---|---|---|
+| Sleep Deep | `WithingsSleepDeep` | Numeric | min | 0 | 1440 | `.0f` | `" min"` | `95` | All |
+| Sleep Light | `WithingsSleepLight` | Numeric | min | 0 | 1440 | `.0f` | `" min"` | `220` | All |
+| Sleep REM | `WithingsSleepREM` | Numeric | min | 0 | 1440 | `.0f` | `" min"` | `90` | All |
+| Time In Bed | `WithingsTimeInBed` | Numeric | min | 0 | 1440 | `.0f` | `" min"` | `460` | All |
+| Sleep Latency | `WithingsSleepLatency` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `12` | All |
+| Wakeup Latency | `WithingsWakeupLatency` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `8` | All |
+| Wake After Sleep | `WithingsWakeAfterSleep` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `25` | All |
+| Wakeup Count | `WithingsWakeupCount` | Numeric | — | 0 | 100 | `.0f` | — | `3` | All |
+| Out Of Bed Count | `WithingsOutOfBedCount` | Numeric | — | 0 | 100 | `.0f` | — | `1` | All |
+| REM Episodes | `WithingsRemEpisodes` | Numeric | — | 0 | 100 | `.0f` | — | `4` | All |
+| Sleep Efficiency | `WithingsSleepEfficiency` | Numeric | % | 0 | 100 | `.1f` | `"%"` | `91.2` | All |
+| Snoring | `WithingsSnoring` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `8` | All |
+| Snoring Episodes | `WithingsSnoringEpisodes` | Numeric | — | 0 | 100 | `.0f` | — | `2` | All |
+| Breathing Disturbance | `WithingsBreathingDisturbance` | Numeric | — | 0 | 100 | `.0f` | — | `30` | All |
+| Sleep HR Min | `WithingsSleepHRMin` | Numeric | bpm | 0 | 250 | `.0f` | `" bpm"` | `48` | All |
+| Sleep HR Max | `WithingsSleepHRMax` | Numeric | bpm | 0 | 250 | `.0f` | `" bpm"` | `78` | All |
+| Respiration Min | `WithingsRespirationMin` | Numeric | br/min | 0 | 60 | `.1f` | `" br/min"` | `12.0` | All |
+| Respiration Max | `WithingsRespirationMax` | Numeric | br/min | 0 | 60 | `.1f` | `" br/min"` | `18.0` | All |
+| Apnea Index | `WithingsApneaIndex` | Numeric | /hr | 0 | 100 | `.1f` | `"/hr"` | `4.5` | Analyzer only |
+
+> Duration unit is controlled by `SLEEP_DURATION_UNIT` in `worker.js` (`"minutes"` default;
+> `"hours"` or `"seconds"` also supported). If you change it, update the field Unit/Format above.
+
 🔧 Payload Validation
 ---------------------
 
@@ -351,8 +482,10 @@ Main keys:
 |-----|---------|
 | `token_data_${userid}` | Token data with `access_token`, `refresh_token`, `expires_at` |
 | `refresh_${userid}` | Refresh token |
-| `sent_${userid}_${grpid}` | Fields already sent for a measurement group |
-| `retry_${userid}_${grpid}` | Data to send manually if retry failed |
+| `sent_${userid}_${grpid}` | Fields already sent for a measurement group (body) |
+| `retry_${userid}_${grpid}` | Body data to send manually if retry failed |
+| `sent_${userid}_sleep_${date}` | Sleep fields already sent for a night (YYYY-MM-DD) |
+| `retry_${userid}_sleep_${date}` | Sleep data to send manually if retry failed |
 
 📱 Telegram Notifications
 -------------------------
@@ -437,15 +570,18 @@ You can modify the notification behavior in the TELEGRAM\_CONFIG object:
 1.  HTTP request → HEAD or POST
 2.  subscribe → immediate response {status:0}
 3.  notify → payload validation
-4.  Immediate response "OK" + ctx.waitUntil(handleNotify)
+4.  Immediate response "OK" + **route by `appli`**:
+    *   `appli=1` (or absent) → `ctx.waitUntil(handleNotify)` — body composition
+    *   `appli=44` → `ctx.waitUntil(handleSleepNotify)` — sleep summary
+    *   `appli=52` → log sleep-mat check-in (no Intervals push); `50`/`51` → ignored
 5.  Retrieve valid access token (KV cache or refresh)
-6.  Call Withings API getmeas
-7.  **NEW**: Group measurements by date and calculate daily averages
-8.  Process averaged data and extract configured fields
-9.  Check already sent → send new fields to Intervals
-10.  Automatic retry on failed send → save to KV for manual retry
-11.  Send Telegram notification (if configured)
-12.  Complete logging at every step
+6.  **Body:** call `measure?action=getmeas` → group by date + daily averages.
+    **Sleep:** call `v2/sleep?action=getsummary` → aggregate series per night date
+7.  Extract & map configured fields (body via `FIELD_MAPPING`, sleep via `SLEEP_FIELD_MAPPING`)
+8.  Check already sent (dedupe per group / per night) → send new fields to Intervals
+9.  Drop-unknown-and-retry on 422; automatic retry on failed send → save to KV for manual retry
+10.  Send Telegram notification (if configured)
+11.  Complete logging at every step
 
 🛠️ Tips
 --------

@@ -127,24 +127,25 @@ async function sendTelegramNotification(message, env) {
   }
 }
 
-function formatTelegramMessage(userid, results, error = null) {
+function formatTelegramMessage(userid, results, error = null, source = "") {
   const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
-  
+  const label = source ? ` ${source}` : "";
+
   if (error) {
-    return `🚨 <b>Withings Worker Error</b>\n` +
+    return `🚨 <b>Withings${label} Worker Error</b>\n` +
            `👤 User: ${userid}\n` +
            `⏰ Time: ${timestamp}\n` +
            `❌ Error: ${error}`;
   }
 
   if (!results || results.length === 0) {
-    return `📊 <b>Withings Worker</b>\n` +
+    return `📊 <b>Withings${label} Worker</b>\n` +
            `👤 User: ${userid}\n` +
            `⏰ Time: ${timestamp}\n` +
            `ℹ️ No data to send`;
   }
 
-  let message = `✅ <b>Withings Data Sent</b>\n` +
+  let message = `✅ <b>Withings${label} Data Sent</b>\n` +
                 `👤 User: ${userid}\n` +
                 `⏰ Time: ${timestamp}\n` +
                 `📊 Days: ${results.length}\n\n`;
@@ -207,10 +208,28 @@ export default {
         validatePayload(payload);
         log("DEBUG", "Payload validation successful");
   
-        // 🔹 Immediate response to Withings to avoid timeout
-        // ctx.waitUntil allows continuing async processing without blocking the response
-        log("DEBUG", "Starting async processing with ctx.waitUntil");
-        ctx.waitUntil(handleNotify(payload, env));
+        // 🔹 Immediate response to Withings to avoid timeout; route by notification
+        // category (appli) and continue async via ctx.waitUntil.
+        const appli = String(payload.appli ?? "");
+        log("DEBUG", `Routing notification by appli=${appli || "(none)"}`);
+        if (appli === "44") {
+          // Sleep summary
+          ctx.waitUntil(handleSleepNotify(payload, env));
+        } else if (appli === "52") {
+          // "Inflate done": the sleep mat finished calibrating after power-up/restart —
+          // a de-facto "device online" signal. Log only (no Intervals push).
+          log("INFO", `🛏️ Sleep mat online (inflate done) for userid: ${payload.userid}`);
+          if (TELEGRAM_CONFIG.enabled) {
+            const ts = new Date().toISOString().slice(0, 19).replace('T', ' ');
+            ctx.waitUntil(sendTelegramNotification(`🛏️ <b>Withings Sleep mat online</b>\n👤 User: ${payload.userid}\n⏰ Time: ${ts}`, env));
+          }
+        } else if (appli === "50" || appli === "51") {
+          // Bed in/out events — acknowledged but not pushed to Intervals.
+          log("INFO", `Bed ${appli === "50" ? "in" : "out"} event for userid: ${payload.userid} (ignored)`);
+        } else {
+          // appli "1" (weight/body composition) or absent (legacy) -> body path.
+          ctx.waitUntil(handleNotify(payload, env));
+        }
         return new Response("OK", { status: 200 });
   
       } catch (err) {
@@ -260,6 +279,67 @@ export default {
     bmr: { withingsType: 226, intervalsField: 'WithingsBMR', decimals: 0 },
     metabolicAge: { withingsType: 227, intervalsField: 'WithingsMetabolicAge', decimals: 0 },
   };
+
+  // 🔧 Sleep duration unit for CUSTOM duration fields ("minutes" | "hours" | "seconds").
+  // NOTE: the built-in `sleepSecs` is ALWAYS seconds regardless of this knob.
+  const SLEEP_DURATION_UNIT = "minutes";
+
+  // 🔧 Withings Sleep (v2/sleep getsummary) -> Intervals wellness mapping.
+  // kind: "duration" (raw seconds, converted per SLEEP_DURATION_UNIT for custom fields),
+  //       "ratio" (0-1 -> percent), "plain" (used as-is).
+  // `builtin` fields are native Intervals wellness fields; the rest are CUSTOM wellness
+  // fields the user must create in Intervals (see README). Fields a device doesn't report,
+  // or custom fields not yet created, are dropped by the hardened sender — device variance
+  // is handled gracefully. The requested `data_fields` list is derived from these keys.
+  const SLEEP_FIELD_MAPPING = {
+    total_sleep_time:                 { intervalsField: 'sleepSecs',                   builtin: true,  kind: 'plain',    decimals: 0 },
+    sleep_score:                      { intervalsField: 'sleepScore',                  builtin: true,  kind: 'plain',    decimals: 0 },
+    hr_average:                       { intervalsField: 'avgSleepingHR',               builtin: true,  kind: 'plain',    decimals: 0 },
+    rr_average:                       { intervalsField: 'respiration',                 builtin: true,  kind: 'plain',    decimals: 1 },
+    rmssd:                            { intervalsField: 'hrv',                         builtin: true,  kind: 'plain',    decimals: 1 },
+    deepsleepduration:                { intervalsField: 'WithingsSleepDeep',           builtin: false, kind: 'duration', decimals: 0 },
+    lightsleepduration:               { intervalsField: 'WithingsSleepLight',          builtin: false, kind: 'duration', decimals: 0 },
+    remsleepduration:                 { intervalsField: 'WithingsSleepREM',            builtin: false, kind: 'duration', decimals: 0 },
+    total_timeinbed:                  { intervalsField: 'WithingsTimeInBed',           builtin: false, kind: 'duration', decimals: 0 },
+    sleep_latency:                    { intervalsField: 'WithingsSleepLatency',        builtin: false, kind: 'duration', decimals: 0 },
+    wakeup_latency:                   { intervalsField: 'WithingsWakeupLatency',       builtin: false, kind: 'duration', decimals: 0 },
+    wakeupduration:                   { intervalsField: 'WithingsWakeAfterSleep',      builtin: false, kind: 'duration', decimals: 0 },
+    wakeupcount:                      { intervalsField: 'WithingsWakeupCount',         builtin: false, kind: 'plain',    decimals: 0 },
+    out_of_bed_count:                 { intervalsField: 'WithingsOutOfBedCount',       builtin: false, kind: 'plain',    decimals: 0 },
+    nb_rem_episodes:                  { intervalsField: 'WithingsRemEpisodes',         builtin: false, kind: 'plain',    decimals: 0 },
+    sleep_efficiency:                 { intervalsField: 'WithingsSleepEfficiency',     builtin: false, kind: 'ratio',    decimals: 1 },
+    snoring:                          { intervalsField: 'WithingsSnoring',             builtin: false, kind: 'duration', decimals: 0 },
+    snoringepisodecount:              { intervalsField: 'WithingsSnoringEpisodes',     builtin: false, kind: 'plain',    decimals: 0 },
+    breathing_disturbances_intensity: { intervalsField: 'WithingsBreathingDisturbance', builtin: false, kind: 'plain',  decimals: 0 },
+    hr_min:                           { intervalsField: 'WithingsSleepHRMin',          builtin: false, kind: 'plain',    decimals: 0 },
+    hr_max:                           { intervalsField: 'WithingsSleepHRMax',          builtin: false, kind: 'plain',    decimals: 0 },
+    rr_min:                           { intervalsField: 'WithingsRespirationMin',      builtin: false, kind: 'plain',    decimals: 1 },
+    rr_max:                           { intervalsField: 'WithingsRespirationMax',      builtin: false, kind: 'plain',    decimals: 1 },
+    apnea_hypopnea_index:             { intervalsField: 'WithingsApneaIndex',          builtin: false, kind: 'plain',    decimals: 1 }, // Sleep Analyzer (EU/AU) only
+  };
+
+  // When a single night is split into multiple sleep series (sustained mid-night awakening),
+  // these fields are SUMMED across the night; all other (scalar) fields are taken from the
+  // longest series (largest total_sleep_time).
+  const SLEEP_SUM_FIELDS = new Set([
+    'total_sleep_time', 'total_timeinbed', 'deepsleepduration', 'lightsleepduration',
+    'remsleepduration', 'sleep_latency', 'wakeup_latency', 'wakeupduration',
+    'wakeupcount', 'out_of_bed_count', 'nb_rem_episodes', 'snoring', 'snoringepisodecount',
+  ]);
+
+  // 🔧 Convert a raw Withings sleep value to its Intervals value per kind.
+  function applyTransform(value, kind, decimals) {
+    let v = Number(value);
+    if (!isFinite(v)) return null;
+    if (kind === 'duration') {
+      if (SLEEP_DURATION_UNIT === 'minutes') v = v / 60;
+      else if (SLEEP_DURATION_UNIT === 'hours') v = v / 3600;
+      // "seconds" -> unchanged
+    } else if (kind === 'ratio') {
+      v = v * 100;
+    }
+    return Number(v.toFixed(decimals));
+  }
   
   // 🔧 Get valid token from KV or refresh if expired
   // Automatic retry included in case of error 601
@@ -586,7 +666,135 @@ export default {
       }
     }
   }
-  
+
+  // 🔧 NEW: Sleep notification processing (appli=44). Fetches v2/sleep getsummary, aggregates
+  // per night date, maps to Intervals wellness, and sends with dedupe + drop-unknown-and-retry.
+  async function handleSleepNotify(payload, env) {
+    const { userid, enddate } = payload;
+    log("DEBUG", `Starting handleSleepNotify for userid: ${userid}, enddate: ${enddate}`);
+    const results = [];
+
+    try {
+      const accessToken = await getValidAccessToken(userid, env);
+
+      // ±1 day window around the notification end date (timezone-safe). We trust each
+      // series' own `date` (computed by Withings in the account timezone) for assignment,
+      // so sessions that start after midnight are handled correctly.
+      const endEpoch = Number(enddate);
+      const ymd = (epoch) => new Date(epoch * 1000).toISOString().slice(0, 10);
+      const startdateymd = ymd(endEpoch - 86400);
+      const enddateymd = ymd(endEpoch + 86400);
+      const dataFields = Object.keys(SLEEP_FIELD_MAPPING).join(",");
+
+      logApi("WITHINGS", `Calling Withings sleep getsummary for userid: ${userid} (${startdateymd}..${enddateymd})`, null, "DEBUG");
+      const params = new URLSearchParams({ action: "getsummary", startdateymd, enddateymd, data_fields: dataFields });
+      const resp = await fetch("https://wbsapi.withings.net/v2/sleep", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString()
+      });
+      const json = await resp.json();
+      logApi("WITHINGS", `Sleep getsummary status: ${json?.status}`, json, "DEBUG");
+
+      if (!json || json.status !== 0) {
+        // Most common cause: the token was minted before sleep support and lacks the
+        // `user.activity` scope. Make that explicit rather than a generic failure.
+        log("WARN", `Sleep getsummary failed (status ${json?.status}) — token likely missing 'user.activity' scope; re-authorize with the sleep scope.`);
+        await sendTelegramNotification(formatTelegramMessage(userid, [], `Sleep getsummary failed (status ${json?.status}) — likely missing user.activity scope`, "Sleep"), env);
+        return;
+      }
+
+      const series = json.body?.series || [];
+      if (!series.length) {
+        logData("MEASUREMENTS", `No sleep series for userid: ${userid} in ${startdateymd}..${enddateymd}`, null, "INFO");
+        return;
+      }
+
+      // Aggregate per night date: SUM the duration/count fields across split-night series;
+      // take scalar fields (score, efficiency, HR/RR/HRV) from the longest series.
+      const byDate = {};
+      for (const item of series) {
+        const date = item.date;
+        const data = item.data || {};
+        if (!date) continue;
+        if (!byDate[date]) byDate[date] = { sums: {}, longest: { data: {}, tst: -1 }, count: 0 };
+        const bucket = byDate[date];
+        bucket.count++;
+        const tst = Number(data.total_sleep_time || 0);
+        if (tst > bucket.longest.tst) bucket.longest = { data, tst };
+        for (const code of Object.keys(SLEEP_FIELD_MAPPING)) {
+          if (data[code] == null) continue;
+          if (SLEEP_SUM_FIELDS.has(code)) bucket.sums[code] = (bucket.sums[code] || 0) + Number(data[code]);
+        }
+      }
+
+      for (const [date, bucket] of Object.entries(byDate)) {
+        // Collect raw aggregated values, then transform to Intervals units.
+        const extracted = {};
+        for (const code of Object.keys(SLEEP_FIELD_MAPPING)) {
+          const rawVal = SLEEP_SUM_FIELDS.has(code) ? bucket.sums[code] : bucket.longest.data[code];
+          if (rawVal == null) continue;
+          const cfg = SLEEP_FIELD_MAPPING[code];
+          const tv = applyTransform(rawVal, cfg.kind, cfg.decimals);
+          if (tv != null) extracted[code] = tv;
+        }
+        if (!Object.keys(extracted).length) {
+          logData("FIELDS", `No sleep fields for ${date}, skipping`, null, "WARN");
+          continue;
+        }
+
+        // Dedupe per night using the existing helpers (key: sent_${userid}_sleep_${date}).
+        const dedupeKey = `sleep_${date}`;
+        const alreadySent = await getAlreadySentFields(userid, dedupeKey, env);
+        const newFields = getNewFieldsToSend(extracted, alreadySent);
+        if (!Object.keys(newFields).length) {
+          logData("DUPLICATES", `All sleep fields already sent for ${date}, skipping`, null, "DEBUG");
+          continue;
+        }
+
+        logApi("INTERVALS", `Sending ${Object.keys(newFields).length} sleep fields to Intervals for ${date} (${bucket.count} series)`);
+        let attempts = 0;
+        let sent = false;
+        while (attempts < 2 && !sent) {
+          attempts++;
+          const sendRes = await sendToIntervals({ date_iso: date + "T12:00:00.000Z", wellnessData: newFields }, env, SLEEP_FIELD_MAPPING);
+          if (sendRes.ok) {
+            const acceptedFields = sendRes.accepted;
+            logApi("INTERVALS", `✅ Sleep sent to Intervals: ${Object.keys(acceptedFields).join(', ') || '(none)'} for ${date}`, acceptedFields);
+            if (sendRes.dropped && sendRes.dropped.length) {
+              log("WARN", `⚠️ Dropped sleep fields with no matching Intervals custom field for ${date}: ${sendRes.dropped.join(', ')}. Create them in Intervals, or your device may not report them.`);
+            }
+            await saveSuccessfulFields(userid, dedupeKey, acceptedFields, sendRes.status, env);
+            results.push({ date, fields: acceptedFields, status: sendRes.status, dropped: sendRes.dropped });
+            sent = true;
+          } else {
+            log("WARN", `❌ Sleep send failed (attempt ${attempts}) for ${date}`, { status: sendRes.status, text: sendRes.text });
+            if (attempts < 2) await new Promise(r => setTimeout(r, 2000));
+          }
+        }
+
+        if (!sent) {
+          logData("RETRIES", `All sleep retries failed for ${date}, saving for manual retry`, null, "ERROR");
+          await env.MY_KV.put(`retry_${userid}_sleep_${date}`, JSON.stringify({
+            attemptAt: new Date().toISOString(),
+            fields: newFields,
+            date,
+            seriesCount: bucket.count
+          }));
+        }
+      }
+
+      logData("MEASUREMENTS", `✅ Completed sleep processing ${Object.keys(byDate).length} day(s) for userid: ${userid}`);
+      await sendTelegramNotification(formatTelegramMessage(userid, results, null, "Sleep"), env);
+
+    } catch (err) {
+      log("ERROR", "handleSleepNotify error", err.message);
+      if (TELEGRAM_CONFIG.includeErrors) {
+        await sendTelegramNotification(formatTelegramMessage(userid, [], err.message, "Sleep"), env);
+      }
+    }
+  }
+
   // 🔧 Utility functions
   function extractConfiguredFields(measures) {
     const extracted = {};
@@ -637,7 +845,7 @@ export default {
   // Hardened: Intervals rejects the WHOLE record with 422 if any single field code is
   // not defined for the athlete. We strip the named field and retry so every recognised
   // field still saves. Returns which fields were accepted vs dropped.
-  async function sendToIntervals({ date_iso, wellnessData }, env) {
+  async function sendToIntervals({ date_iso, wellnessData }, env, mapping = FIELD_MAPPING) {
     const date = date_iso.slice(0, 10); // YYYY-MM-DD
     const athleteId = env.INTERVALS_ATHLETE_ID;
     const apiKey = env.INTERVALS_API_KEY;
@@ -645,11 +853,12 @@ export default {
     const auth = "Basic " + btoa(`API_KEY:${apiKey}`);
 
     // Build the payload keyed by Intervals field code, keeping a reverse map so a field
-    // named in a 422 can be dropped (and reported) by that code.
+    // named in a 422 can be dropped (and reported) by that code. `mapping` lets callers
+    // reuse this for different sources (FIELD_MAPPING for body, SLEEP_FIELD_MAPPING for sleep).
     const payload = {};
     const codeToFieldName = {};
     for (const [fieldName, value] of Object.entries(wellnessData)) {
-      const config = FIELD_MAPPING[fieldName];
+      const config = mapping[fieldName];
       if (config) {
         payload[config.intervalsField] = value;
         codeToFieldName[config.intervalsField] = fieldName;

@@ -9,6 +9,11 @@
 #   4. list <userid>      -> show current Withings notification subscriptions
 #   5. revoke <userid> <callbackurl> -> remove a stale subscription
 #
+# NOTE: This requests the user.metrics + user.activity + user.sleepevents scopes (weight,
+# sleep summaries, and sleep-mat device events). If you previously authorized with a
+# narrower scope, you MUST re-run `authorize` -> `token` to mint a token with the new
+# scope — adding scope here does not upgrade an existing refresh token.
+#
 # The redirect URI and callback URL both default to the deployed Worker URL. The
 # redirect URI MUST match what is registered in your Withings app (developer.withings.com).
 # Override if needed:  WITHINGS_REDIRECT_URI=... WITHINGS_CALLBACK_URL=... ./scripts/withings-bootstrap.sh ...
@@ -26,8 +31,16 @@ WORKER_URL="https://withings-webhook.christhonie.workers.dev"
 REDIRECT_URI="${WITHINGS_REDIRECT_URI:-$WORKER_URL}"
 CALLBACK_URL="${WITHINGS_CALLBACK_URL:-$WORKER_URL}"
 
-# appli=1 -> body scale / weight & body-composition measurements.
-APPLI=1
+# OAuth scope: user.metrics (weight/body), user.activity (sleep summaries),
+# user.sleepevents (sleep-mat device events: inflate-done check-in, bed in/out).
+SCOPE="user.metrics,user.activity,user.sleepevents"
+
+# Notification categories to subscribe:
+#   1  = weight / body-composition measurements
+#   44 = sleep summary
+#   52 = inflate done (sleep mat came online / calibrated after a restart)
+# (50/51 bed in/out also require user.sleepevents if you add them.)
+APPLIS=(1 44 52)
 
 # Temp file for KV values, cleaned up on exit (declared globally so the EXIT trap
 # can still see it after the command function returns).
@@ -51,7 +64,7 @@ cmd_authorize() {
   local state; state="$(openssl rand -hex 8)"
   echo "1) Open this URL, log in, and authorize:"
   echo
-  echo "https://account.withings.com/oauth2_user/authorize2?response_type=code&client_id=${WITHINGS_CLIENT_ID}&redirect_uri=${REDIRECT_URI}&scope=user.metrics&state=${state}"
+  echo "https://account.withings.com/oauth2_user/authorize2?response_type=code&client_id=${WITHINGS_CLIENT_ID}&redirect_uri=${REDIRECT_URI}&scope=${SCOPE}&state=${state}"
   echo
   echo "2) You will be redirected to ${REDIRECT_URI}?code=XXXX&state=${state}"
   echo "   Copy the value of 'code' from the address bar (it expires in 10 minutes)."
@@ -105,22 +118,25 @@ cmd_token() {
   subscribe_with_token "$access"
 }
 
-# Register the webhook using a known-good access token.
+# Register the webhook for every category in APPLIS using a known-good access token.
 subscribe_with_token() {
   local access="$1"
-  local resp
-  resp="$(curl -s -X POST https://wbsapi.withings.net/notify \
-    -H "Authorization: Bearer ${access}" \
-    --data-urlencode 'action=subscribe' \
-    --data-urlencode "callbackurl=${CALLBACK_URL}" \
-    --data-urlencode "appli=${APPLI}")"
-  echo "$resp" | jq .
-  local status; status="$(echo "$resp" | jq -r '.status')"
-  if [ "$status" = "0" ]; then
-    echo "✅ Webhook subscribed: ${CALLBACK_URL} (appli=${APPLI})."
-  else
-    echo "⚠️  Subscribe returned status=$status — review the response above." >&2
-  fi
+  local appli resp status all_ok=1
+  for appli in "${APPLIS[@]}"; do
+    resp="$(curl -s -X POST https://wbsapi.withings.net/notify \
+      -H "Authorization: Bearer ${access}" \
+      --data-urlencode 'action=subscribe' \
+      --data-urlencode "callbackurl=${CALLBACK_URL}" \
+      --data-urlencode "appli=${appli}")"
+    status="$(echo "$resp" | jq -r '.status')"
+    if [ "$status" = "0" ]; then
+      echo "✅ Subscribed appli=${appli} -> ${CALLBACK_URL}"
+    else
+      echo "⚠️  Subscribe appli=${appli} returned status=$status: $(echo "$resp" | jq -c .)" >&2
+      all_ok=0
+    fi
+  done
+  [ "$all_ok" = "1" ] || echo "Some subscriptions failed — appli=44 needs the user.activity scope, appli=52 needs user.sleepevents. Re-run authorize/token if the scope is missing." >&2
 }
 
 # Pull the current access token out of KV for the given user.
@@ -141,10 +157,14 @@ cmd_list() {
   local userid="${1:?usage: list <userid>}"
   local access; access="$(access_from_kv "$userid")"
   [ -n "$access" ] && [ "$access" != "null" ] || { echo "ERROR: no token in KV for userid=$userid" >&2; exit 1; }
-  curl -s -X POST https://wbsapi.withings.net/notify \
-    -H "Authorization: Bearer ${access}" \
-    --data-urlencode 'action=list' \
-    --data-urlencode "appli=${APPLI}" | jq .
+  local appli
+  for appli in "${APPLIS[@]}"; do
+    echo "--- appli=${appli} ---"
+    curl -s -X POST https://wbsapi.withings.net/notify \
+      -H "Authorization: Bearer ${access}" \
+      --data-urlencode 'action=list' \
+      --data-urlencode "appli=${appli}" | jq .
+  done
 }
 
 cmd_revoke() {
@@ -152,11 +172,15 @@ cmd_revoke() {
   local url="${2:?usage: revoke <userid> <callbackurl>}"
   local access; access="$(access_from_kv "$userid")"
   [ -n "$access" ] && [ "$access" != "null" ] || { echo "ERROR: no token in KV for userid=$userid" >&2; exit 1; }
-  curl -s -X POST https://wbsapi.withings.net/notify \
-    -H "Authorization: Bearer ${access}" \
-    --data-urlencode 'action=revoke' \
-    --data-urlencode "callbackurl=${url}" \
-    --data-urlencode "appli=${APPLI}" | jq .
+  local appli
+  for appli in "${APPLIS[@]}"; do
+    echo "--- revoke appli=${appli} ---"
+    curl -s -X POST https://wbsapi.withings.net/notify \
+      -H "Authorization: Bearer ${access}" \
+      --data-urlencode 'action=revoke' \
+      --data-urlencode "callbackurl=${url}" \
+      --data-urlencode "appli=${appli}" | jq .
+  done
 }
 
 case "${1:-}" in
