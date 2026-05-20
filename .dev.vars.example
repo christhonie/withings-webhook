@@ -1,0 +1,15 @@
+# Copy to `.dev.vars` for local `wrangler dev`. In production these are set as
+# encrypted secrets via `wrangler secret put <NAME>` (see README "Configuration").
+# Do NOT commit the real `.dev.vars` file — it is gitignored.
+
+# Withings OAuth app (https://developer.withings.com/)
+WITHINGS_CLIENT_ID=
+WITHINGS_CLIENT_SECRET=
+
+# Intervals.icu (Settings -> Developer)
+INTERVALS_ATHLETE_ID=
+INTERVALS_API_KEY=
+
+# Telegram notifications (optional — leave blank to disable)
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=

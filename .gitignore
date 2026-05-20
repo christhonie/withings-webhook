@@ -1,0 +1,11 @@
+# Local secrets for `wrangler dev` (never commit real credentials)
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Wrangler build/state
+.wrangler/
+
+# Node
+node_modules/
+npm-debug.log*

@@ -1,0 +1,16 @@
+# Cloudflare Worker config for the Withings -> Intervals.icu webhook bridge.
+# Secrets (Withings/Intervals/Telegram credentials) are NOT stored here; set them with
+# `wrangler secret put <NAME>` so they live encrypted in Cloudflare, not in git.
+name = "withings-webhook"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# KV namespace holding OAuth tokens, dedupe state, and manual-retry data.
+# The Worker code reads/writes this via `env.MY_KV`.
+[[kv_namespaces]]
+binding = "MY_KV"
+id = "9220432e316743a9bdff3fde47ad51c8"
+
+# Observability: keep `wrangler tail` logs flowing and enable the dashboard logs view.
+[observability]
+enabled = true
