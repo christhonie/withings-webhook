@@ -356,9 +356,14 @@ connect.
 * Brief awakenings / bathroom trips stay within **one** night session (counted as
   `WithingsWakeupCount` / `WithingsWakeAfterSleep` / `WithingsOutOfBedCount`). Withings only
   starts a separate session after a *sustained* absence.
-* If a night is split into multiple series, the Worker **aggregates per night date**: it **sums**
-  durations & counts and takes scalar metrics (score, efficiency, HR/RR/HRV) from the **longest**
-  series. (Daytime naps that land on the same date are currently folded into the night total.)
+* If a night is split into multiple series, the Worker **aggregates per night date** with a
+  **per-field rule** (`combine` in `SLEEP_FIELD_MAPPING`): durations & counts are **summed**;
+  HR/respiration bounds take **min**/**max**; rates & intensities (avg HR, respiration, HRV,
+  breathing disturbance) are **duration-weighted averages**; **efficiency** is recomputed from the
+  combined `Σtotal_sleep_time / Σtotal_timeinbed`; sleep-onset and final-wake **latencies** come
+  from the **first**/**last** series; and the **sleep score** from the **main (longest)** series.
+  For a single series every rule is a pass-through. (Daytime naps on the same date are currently
+  folded into the night total — see the naps note.)
 * The night/date comes from Withings’ own `series[].date` (in your account timezone), so sessions
   that start after midnight are dated correctly. Stored under wellness date `YYYY-MM-DD`.
 

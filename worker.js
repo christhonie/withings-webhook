@@ -289,45 +289,46 @@ export default {
   // 🔧 Withings Sleep (v2/sleep getsummary) -> Intervals wellness mapping.
   // kind: "duration" (raw seconds, converted per SLEEP_DURATION_UNIT for custom fields),
   //       "ratio" (0-1 -> percent), "plain" (used as-is).
+  // combine: how to merge this field when Withings returns >1 series for the same night
+  //   (split night / nap) — see combineSleepSeries(). For a single series every strategy
+  //   is a pass-through, so this only matters when multiple same-date series exist:
+  //     sum        - additive totals (durations, counts)
+  //     min / max  - extremes (HR/respiration bounds)
+  //     wavg       - average weighted by each series' total_sleep_time (rates/intensities)
+  //     efficiency - recomputed as Σtotal_sleep_time / Σtotal_timeinbed (single series: as-is)
+  //     first      - value from the earliest series (sleep-onset latency)
+  //     last       - value from the latest series (final wake-up latency)
+  //     primary    - value from the longest series (non-additive scores)
   // `builtin` fields are native Intervals wellness fields; the rest are CUSTOM wellness
   // fields the user must create in Intervals (see README). Fields a device doesn't report,
-  // or custom fields not yet created, are dropped by the hardened sender — device variance
-  // is handled gracefully. The requested `data_fields` list is derived from these keys.
+  // or custom fields not yet created, are dropped by the hardened sender. The requested
+  // `data_fields` list is derived from these keys.
   const SLEEP_FIELD_MAPPING = {
-    total_sleep_time:                 { intervalsField: 'sleepSecs',                   builtin: true,  kind: 'plain',    decimals: 0 },
-    sleep_score:                      { intervalsField: 'sleepScore',                  builtin: true,  kind: 'plain',    decimals: 0 },
-    hr_average:                       { intervalsField: 'avgSleepingHR',               builtin: true,  kind: 'plain',    decimals: 0 },
-    rr_average:                       { intervalsField: 'respiration',                 builtin: true,  kind: 'plain',    decimals: 1 },
-    rmssd:                            { intervalsField: 'hrv',                         builtin: true,  kind: 'plain',    decimals: 1 },
-    deepsleepduration:                { intervalsField: 'WithingsSleepDeep',           builtin: false, kind: 'duration', decimals: 0 },
-    lightsleepduration:               { intervalsField: 'WithingsSleepLight',          builtin: false, kind: 'duration', decimals: 0 },
-    remsleepduration:                 { intervalsField: 'WithingsSleepREM',            builtin: false, kind: 'duration', decimals: 0 },
-    total_timeinbed:                  { intervalsField: 'WithingsTimeInBed',           builtin: false, kind: 'duration', decimals: 0 },
-    sleep_latency:                    { intervalsField: 'WithingsSleepLatency',        builtin: false, kind: 'duration', decimals: 0 },
-    wakeup_latency:                   { intervalsField: 'WithingsWakeupLatency',       builtin: false, kind: 'duration', decimals: 0 },
-    wakeupduration:                   { intervalsField: 'WithingsWakeAfterSleep',      builtin: false, kind: 'duration', decimals: 0 },
-    wakeupcount:                      { intervalsField: 'WithingsWakeupCount',         builtin: false, kind: 'plain',    decimals: 0 },
-    out_of_bed_count:                 { intervalsField: 'WithingsOutOfBedCount',       builtin: false, kind: 'plain',    decimals: 0 },
-    nb_rem_episodes:                  { intervalsField: 'WithingsRemEpisodes',         builtin: false, kind: 'plain',    decimals: 0 },
-    sleep_efficiency:                 { intervalsField: 'WithingsSleepEfficiency',     builtin: false, kind: 'ratio',    decimals: 1 },
-    snoring:                          { intervalsField: 'WithingsSnoring',             builtin: false, kind: 'duration', decimals: 0 },
-    snoringepisodecount:              { intervalsField: 'WithingsSnoringEpisodes',     builtin: false, kind: 'plain',    decimals: 0 },
-    breathing_disturbances_intensity: { intervalsField: 'WithingsBreathingDisturbance', builtin: false, kind: 'plain',  decimals: 0 },
-    hr_min:                           { intervalsField: 'WithingsSleepHRMin',          builtin: false, kind: 'plain',    decimals: 0 },
-    hr_max:                           { intervalsField: 'WithingsSleepHRMax',          builtin: false, kind: 'plain',    decimals: 0 },
-    rr_min:                           { intervalsField: 'WithingsRespirationMin',      builtin: false, kind: 'plain',    decimals: 1 },
-    rr_max:                           { intervalsField: 'WithingsRespirationMax',      builtin: false, kind: 'plain',    decimals: 1 },
-    apnea_hypopnea_index:             { intervalsField: 'WithingsApneaIndex',          builtin: false, kind: 'plain',    decimals: 1 }, // Sleep Analyzer (EU/AU) only
+    total_sleep_time:                 { intervalsField: 'sleepSecs',                   builtin: true,  kind: 'plain',    decimals: 0, combine: 'sum' },
+    sleep_score:                      { intervalsField: 'sleepScore',                  builtin: true,  kind: 'plain',    decimals: 0, combine: 'primary' },
+    hr_average:                       { intervalsField: 'avgSleepingHR',               builtin: true,  kind: 'plain',    decimals: 0, combine: 'wavg' },
+    rr_average:                       { intervalsField: 'respiration',                 builtin: true,  kind: 'plain',    decimals: 1, combine: 'wavg' },
+    rmssd:                            { intervalsField: 'hrv',                         builtin: true,  kind: 'plain',    decimals: 1, combine: 'wavg' },
+    deepsleepduration:                { intervalsField: 'WithingsSleepDeep',           builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
+    lightsleepduration:               { intervalsField: 'WithingsSleepLight',          builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
+    remsleepduration:                 { intervalsField: 'WithingsSleepREM',            builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
+    total_timeinbed:                  { intervalsField: 'WithingsTimeInBed',           builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
+    sleep_latency:                    { intervalsField: 'WithingsSleepLatency',        builtin: false, kind: 'duration', decimals: 0, combine: 'first' },
+    wakeup_latency:                   { intervalsField: 'WithingsWakeupLatency',       builtin: false, kind: 'duration', decimals: 0, combine: 'last' },
+    wakeupduration:                   { intervalsField: 'WithingsWakeAfterSleep',      builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
+    wakeupcount:                      { intervalsField: 'WithingsWakeupCount',         builtin: false, kind: 'plain',    decimals: 0, combine: 'sum' },
+    out_of_bed_count:                 { intervalsField: 'WithingsOutOfBedCount',       builtin: false, kind: 'plain',    decimals: 0, combine: 'sum' },
+    nb_rem_episodes:                  { intervalsField: 'WithingsRemEpisodes',         builtin: false, kind: 'plain',    decimals: 0, combine: 'sum' },
+    sleep_efficiency:                 { intervalsField: 'WithingsSleepEfficiency',     builtin: false, kind: 'ratio',    decimals: 1, combine: 'efficiency' },
+    snoring:                          { intervalsField: 'WithingsSnoring',             builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
+    snoringepisodecount:              { intervalsField: 'WithingsSnoringEpisodes',     builtin: false, kind: 'plain',    decimals: 0, combine: 'sum' },
+    breathing_disturbances_intensity: { intervalsField: 'WithingsBreathingDisturbance', builtin: false, kind: 'plain',  decimals: 0, combine: 'wavg' },
+    hr_min:                           { intervalsField: 'WithingsSleepHRMin',          builtin: false, kind: 'plain',    decimals: 0, combine: 'min' },
+    hr_max:                           { intervalsField: 'WithingsSleepHRMax',          builtin: false, kind: 'plain',    decimals: 0, combine: 'max' },
+    rr_min:                           { intervalsField: 'WithingsRespirationMin',      builtin: false, kind: 'plain',    decimals: 1, combine: 'min' },
+    rr_max:                           { intervalsField: 'WithingsRespirationMax',      builtin: false, kind: 'plain',    decimals: 1, combine: 'max' },
+    apnea_hypopnea_index:             { intervalsField: 'WithingsApneaIndex',          builtin: false, kind: 'plain',    decimals: 1, combine: 'wavg' }, // Sleep Analyzer (EU/AU) only
   };
-
-  // When a single night is split into multiple sleep series (sustained mid-night awakening),
-  // these fields are SUMMED across the night; all other (scalar) fields are taken from the
-  // longest series (largest total_sleep_time).
-  const SLEEP_SUM_FIELDS = new Set([
-    'total_sleep_time', 'total_timeinbed', 'deepsleepduration', 'lightsleepduration',
-    'remsleepduration', 'sleep_latency', 'wakeup_latency', 'wakeupduration',
-    'wakeupcount', 'out_of_bed_count', 'nb_rem_episodes', 'snoring', 'snoringepisodecount',
-  ]);
 
   // 🔧 Convert a raw Withings sleep value to its Intervals value per kind.
   function applyTransform(value, kind, decimals) {
@@ -341,6 +342,55 @@ export default {
       v = v * 100;
     }
     return Number(v.toFixed(decimals));
+  }
+
+  // 🔧 Combine 1+ sleep series for the same night into one set of RAW field values,
+  // applying each field's `combine` strategy (see SLEEP_FIELD_MAPPING). For a single
+  // series every strategy returns that series' value unchanged.
+  function combineSleepSeries(items) {
+    // Normalise: { data, tst (weight), start }
+    const rows = items.map(it => ({
+      data: it.data || {},
+      tst: Number((it.data || {}).total_sleep_time || 0),
+      start: Number(it.startdate || 0),
+    }));
+    const pick = (cmp) => rows.reduce((a, b) => (cmp(a, b) ? a : b), rows[0]);
+    const primary = pick((a, b) => a.tst >= b.tst);   // longest sleep
+    const firstRow = pick((a, b) => a.start <= b.start); // earliest
+    const lastRow = pick((a, b) => a.start >= b.start);  // latest
+
+    const out = {};
+    for (const [code, cfg] of Object.entries(SLEEP_FIELD_MAPPING)) {
+      const present = rows.filter(r => r.data[code] != null);
+      if (!present.length) continue;
+      const nums = present.map(r => Number(r.data[code]));
+      let v;
+      switch (cfg.combine) {
+        case 'sum': v = nums.reduce((s, x) => s + x, 0); break;
+        case 'min': v = Math.min(...nums); break;
+        case 'max': v = Math.max(...nums); break;
+        case 'wavg': {
+          const w = present.reduce((s, r) => s + (r.tst || 0), 0);
+          v = w > 0
+            ? present.reduce((s, r) => s + Number(r.data[code]) * (r.tst || 0), 0) / w
+            : nums.reduce((s, x) => s + x, 0) / nums.length;
+          break;
+        }
+        case 'efficiency': {
+          if (present.length === 1) { v = nums[0]; break; } // single: trust Withings' value
+          const tst = rows.reduce((s, r) => s + Number(r.data.total_sleep_time || 0), 0);
+          const tib = rows.reduce((s, r) => s + Number(r.data.total_timeinbed || 0), 0);
+          v = tib > 0 ? tst / tib : Number(primary.data[code]);
+          break;
+        }
+        case 'first': v = firstRow.data[code] != null ? Number(firstRow.data[code]) : nums[0]; break;
+        case 'last':  v = lastRow.data[code]  != null ? Number(lastRow.data[code])  : nums[nums.length - 1]; break;
+        case 'primary':
+        default: v = primary.data[code] != null ? Number(primary.data[code]) : nums[0]; break;
+      }
+      if (v != null && isFinite(v)) out[code] = v;
+    }
+    return out;
   }
   
   // 🔧 Get valid token from KV or refresh if expired
@@ -712,32 +762,20 @@ export default {
         return;
       }
 
-      // Aggregate per night date: SUM the duration/count fields across split-night series;
-      // take scalar fields (score, efficiency, HR/RR/HRV) from the longest series.
+      // Group series by night date, then combine per-field (combineSleepSeries) and
+      // transform to Intervals units.
       const byDate = {};
       for (const item of series) {
-        const date = item.date;
-        const data = item.data || {};
-        if (!date) continue;
-        if (!byDate[date]) byDate[date] = { sums: {}, longest: { data: {}, tst: -1 }, count: 0 };
-        const bucket = byDate[date];
-        bucket.count++;
-        const tst = Number(data.total_sleep_time || 0);
-        if (tst > bucket.longest.tst) bucket.longest = { data, tst };
-        for (const code of Object.keys(SLEEP_FIELD_MAPPING)) {
-          if (data[code] == null) continue;
-          if (SLEEP_SUM_FIELDS.has(code)) bucket.sums[code] = (bucket.sums[code] || 0) + Number(data[code]);
-        }
+        if (item && item.date) (byDate[item.date] ||= []).push(item);
       }
 
-      for (const [date, bucket] of Object.entries(byDate)) {
-        // Collect raw aggregated values, then transform to Intervals units.
+      for (const [date, items] of Object.entries(byDate)) {
+        const seriesCount = items.length;
+        const combined = combineSleepSeries(items);
         const extracted = {};
-        for (const code of Object.keys(SLEEP_FIELD_MAPPING)) {
-          const rawVal = SLEEP_SUM_FIELDS.has(code) ? bucket.sums[code] : bucket.longest.data[code];
-          if (rawVal == null) continue;
+        for (const [code, raw] of Object.entries(combined)) {
           const cfg = SLEEP_FIELD_MAPPING[code];
-          const tv = applyTransform(rawVal, cfg.kind, cfg.decimals);
+          const tv = applyTransform(raw, cfg.kind, cfg.decimals);
           if (tv != null) extracted[code] = tv;
         }
         if (!Object.keys(extracted).length) {
@@ -754,7 +792,7 @@ export default {
           continue;
         }
 
-        logApi("INTERVALS", `Sending ${Object.keys(newFields).length} sleep fields to Intervals for ${date} (${bucket.count} series)`);
+        logApi("INTERVALS", `Sending ${Object.keys(newFields).length} sleep fields to Intervals for ${date} (${seriesCount} series)`);
         let attempts = 0;
         let sent = false;
         while (attempts < 2 && !sent) {
@@ -781,7 +819,7 @@ export default {
             attemptAt: new Date().toISOString(),
             fields: newFields,
             date,
-            seriesCount: bucket.count
+            seriesCount: seriesCount
           }));
         }
       }
