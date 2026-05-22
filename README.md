@@ -102,7 +102,7 @@ https://account.withings.com/oauth2\_user/authorize2?response\_type=code&client\
   *   Replace YOUR\_CLIENT\_ID with your actual client ID
   *   Replace YOUR\_REDIRECT\_URI with your configured redirect URI
   *   The user will be redirected to your redirect URI with a code parameter
-  *   **Scopes:** `user.metrics` (weight/body), `user.activity` (sleep summaries), `user.sleepevents` (sleep-mat device events). If you previously authorized with only `user.metrics`, you **must** re-run this flow to add sleep — appending scope does not upgrade an existing token. See the [Sleep Tracking](#-sleep-tracking-sleep-analyzer--sleep-mat) section.
+  *   **Scopes:** `user.metrics` (weight/body), `user.activity` (sleep summaries), `user.sleepevents` (sleep-mat device events). If you previously authorized with only `user.metrics`, you **must** re-run this flow to add sleep — appending scope does not upgrade an existing token. See the [Sleep Tracking](#sleep-tracking) section.
 
 2.  **Extract the code from the redirect URL:**
    *   The code will be in the URL parameter: ?code=ABC123...
@@ -308,6 +308,8 @@ Notes on the columns:
 - **Only create the fields your scale actually reports.** Most Body / Body+ scales send the first four (muscle, water, bone, lean mass). Visceral Fat, BMR and Metabolic Age (Withings types 170 / 226 / 227) come from higher-end models only — create them only if your scale sends them; otherwise they simply stay empty.
 
 For what each metric means, see Withings’ [body composition & BIA guide](https://support.withings.com/hc/en-us/articles/22480153133841-Body-Smart-Learn-more-about-body-composition-and-bioelectrical-impedance-analysis-BIA).
+
+<a name="sleep-tracking"></a>
 
 😴 Sleep Tracking (Sleep Analyzer / Sleep Mat)
 ----------------------------------------------
