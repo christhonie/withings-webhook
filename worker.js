@@ -767,8 +767,8 @@ export default {
         return;
       }
 
-      // Group series by night date, then combine per-field (combineSleepSeries) and
-      // transform to Intervals units.
+      // Group series by night date, then reduce to one per-field record and transform
+      // to Intervals units.
       const byDate = {};
       for (const item of series) {
         if (item && item.date) (byDate[item.date] ||= []).push(item);
@@ -776,7 +776,24 @@ export default {
 
       for (const [date, items] of Object.entries(byDate)) {
         const seriesCount = items.length;
-        const combined = combineSleepSeries(items);
+        // 🛏️ Nap handling — Option B ("keep only the main series"): when a date has more
+        // than one series, keep just the longest (by total_sleep_time) and drop the rest.
+        // Withings already merges genuine split nights server-side into a single series, so
+        // multiple same-date series are in practice a daytime nap; the previous behaviour
+        // (combineSleepSeries over all of them) folded the nap into the night and inflated
+        // its totals. Naps are intentionally NOT recorded in Intervals — they stay in the
+        // Withings app. This is the agreed interim; Option D (time/gap classifier) is the
+        // long-term target. See docs/modules/ROOT/pages/design-naps.adoc.
+        let mainItems = items;
+        if (seriesCount > 1) {
+          const tst = (it) => Number((it.data || {}).total_sleep_time || 0);
+          const mainSeries = items.reduce((a, b) => (tst(b) > tst(a) ? b : a), items[0]);
+          mainItems = [mainSeries];
+          logData("MEASUREMENTS", `🛏️ ${date}: ${seriesCount} series — keeping longest (${tst(mainSeries)}s asleep), dropping ${seriesCount - 1} as nap(s)`, null, "INFO");
+        }
+        // combineSleepSeries over a single item is a per-field pass-through (e.g. efficiency
+        // is trusted as-is), so this preserves the existing single-night transform path.
+        const combined = combineSleepSeries(mainItems);
         const extracted = {};
         for (const [code, raw] of Object.entries(combined)) {
           const cfg = SLEEP_FIELD_MAPPING[code];

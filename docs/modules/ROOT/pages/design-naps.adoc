@@ -1,17 +1,17 @@
 = Naps Handling Design
 :author: Christhonie Geldenhuys
 :revdate: 2026-05-22
-:revnumber: 0.1
-:status: draft
-:description: Proposed handling of daytime naps in the Withings Sleep integration.
+:revnumber: 0.2
+:status: interim decided — Option B implemented
+:description: Handling of daytime naps in the Withings Sleep integration.
 
 == Purpose
 
 Define how the Worker should treat *daytime naps* — short sleep sessions that Withings records
-separately from the main overnight sleep. This is outstanding functionality: today's behaviour
-is a side effect of the multi-series combine logic, not a deliberate nap policy. This document
-captures the problem, the options, and a recommended direction so the decision can be made
-before any implementation.
+separately from the main overnight sleep. The original behaviour was a side effect of the
+multi-series combine logic, not a deliberate nap policy. This document captures the problem, the
+options, and the decision taken. *Decision (2026-05-22): Option B is implemented as the interim
+policy — see <<decision>>.*
 
 == Context
 
@@ -31,11 +31,12 @@ Two distinct situations produce multiple same-date series, and they call for opp
 The ambiguity is that both appear, at the data level, simply as "more than one series for the
 same date."
 
-== Current behaviour
+== Original behaviour (superseded 2026-05-22)
 
-Same-date series are always combined into the one daily record. This is correct for split
-nights, but it means a same-date nap is currently *folded into the night total* — usually not
-what the athlete wants.
+Same-date series were always combined into the one daily record. This is correct for split
+nights, but it meant a same-date nap was *folded into the night total* — inflating deep/light/REM,
+time-in-bed and awake totals, and dragging efficiency down — usually not what the athlete wants.
+This is the behaviour Option B replaces; see <<decision>>.
 
 == Options evaluated
 
@@ -70,7 +71,40 @@ metrics, and the residual risk (losing the second half of a split night) is rare
 contamination of every napped day. Option C can be layered on later if preserving nap detail
 proves valuable.
 
-This requires a product decision before implementation and is deliberately deferred.
+[[decision]]
+== Decision (2026-05-22)
+
+*Option B is implemented* as the interim policy, and *naps are intentionally kept out of the
+Intervals training journal* — they remain visible in the Withings app, which the athlete also
+uses. Rationale:
+
+* *Naps have no honest home in Intervals' model.* Intervals is one-record-per-day and reads the
+  sleep fields as _last night's_ sleep (efficiency, latency, deep/REM architecture are
+  night-quality signals). A nap cannot contribute to that model without corrupting it — Option A's
+  fold-in is the only "inclusion" path and it is wrong. The night is what drives readiness; the nap
+  is supplementary context, already covered by the Withings app.
+* *Option B's main risk barely applies here.* B can truncate a genuine split night by keeping only
+  the longest series — but Withings already merges split nights server-side into a single series
+  before the Worker sees them (observed 2026-05-21: a ~06:00 wake to let the dog out fired an early
+  webhook, yet the 08:00 notification returned the two halves already combined into one series). So
+  multiple same-date series are, in practice, a nap rather than a split night, and B rarely loses
+  real night data.
+* *Implementation:* in `handleSleepNotify`, when a date has more than one series, keep only the
+  longest by `total_sleep_time` and drop the rest (logged). Single-series nights are unchanged.
+
+The *first real nap (2026-05-22, 17:09–19:04, ~69 min asleep)* had already been folded into that
+night's record under the old behaviour; the record was manually corrected to night-only when the
+decision was taken, and is retained as the first validation case for a future Option D classifier.
+
+=== Still open / deferred
+
+* *Option D (time/gap classifier)* remains the long-term target — only classification can tell a
+  split night from a nap at the data level, and it would let split-night halves be combined while
+  naps are routed away.
+* *Option C (separate nap fields)* is deferred until there is a concrete need to trend naps inside
+  Intervals (easily charted there). If added, the nap representation *need not be as extensive as
+  the night* — a small subset (e.g. nap duration, perhaps deep/efficiency) suffices, not the full
+  `Withings*` field family.
 
 == Open questions
 
