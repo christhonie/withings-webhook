@@ -377,7 +377,7 @@ sleep sync (or `getsummary`) once to confirm your device's set.
 | Field group | Withings Sleep / Sleep Mat | Sleep Analyzer (EU/AU) | Sleep Rx (US) |
 |---|:---:|:---:|:---:|
 | Stages, score, efficiency, latency, WASO, wakeups, time-in-bed | ✅ | ✅ | ✅ |
-| HR (avg/min/max), respiration (avg/min/max), HRV (rmssd) | ✅ | ✅ | ✅ |
+| HR (avg/min/max), respiration (avg/min/max), HRV (`rmssd_start_avg`/`rmssd_end_avg`) | ✅ | ✅ | ✅ |
 | Snoring + episodes, breathing-disturbance intensity | ✅ | ✅ | ✅ |
 | **Apnea-Hypopnea Index (`apnea_hypopnea_index`)** | ❌ | ✅ | ❌ |
 
@@ -392,14 +392,16 @@ Durations are stored in **minutes** for custom fields (the built-in `sleepSecs` 
 | sleep_score | `sleepScore` | built-in | 0–100 |
 | hr_average | `avgSleepingHR` | built-in | bpm |
 | rr_average | `respiration` | built-in | br/min |
-| rmssd | `hrv` | built-in | ms |
+| rmssd_end_avg | `hrv` | built-in | ms (HRV, last 90 min) |
+| rmssd_start_avg | `WithingsHRVStart` ★ | custom | ms (HRV, first 90 min) |
 | deepsleepduration | `WithingsSleepDeep` ★ | custom | min |
 | lightsleepduration | `WithingsSleepLight` ★ | custom | min |
 | remsleepduration | `WithingsSleepREM` ★ | custom | min |
 | total_timeinbed | `WithingsTimeInBed` ★ | custom | min |
 | sleep_latency | `WithingsSleepLatency` ★ | custom | min |
 | wakeup_latency | `WithingsWakeupLatency` ★ | custom | min |
-| wakeupduration (WASO) | `WithingsWakeAfterSleep` ★ | custom | min |
+| wakeupduration | `WithingsAwakeTotal` ★ | custom | min (total awake in bed) |
+| waso | `WithingsWakeAfterSleep` ★ | custom | min (wake after sleep onset) |
 | wakeupcount | `WithingsWakeupCount` ★ | custom | count |
 | out_of_bed_count | `WithingsOutOfBedCount` ★ | custom | count |
 | nb_rem_episodes | `WithingsRemEpisodes` ★ | custom | count |
@@ -407,6 +409,8 @@ Durations are stored in **minutes** for custom fields (the built-in `sleepSecs` 
 | snoring | `WithingsSnoring` ★ | custom | min |
 | snoringepisodecount | `WithingsSnoringEpisodes` ★ | custom | count |
 | breathing_disturbances_intensity | `WithingsBreathingDisturbance` ★ | custom | score |
+| mvt_score_avg | `WithingsMovementScore` ★ | custom | 0–255 |
+| mvt_active_duration | `WithingsMovementDuration` ★ | custom | min |
 | hr_min | `WithingsSleepHRMin` ★ | custom | bpm |
 | hr_max | `WithingsSleepHRMax` ★ | custom | bpm |
 | rr_min | `WithingsRespirationMin` ★ | custom | br/min |
@@ -427,7 +431,8 @@ the OK button stays greyed out). Suffix shown with a leading space.
 | Time In Bed | `WithingsTimeInBed` | Numeric | min | 0 | 1440 | `.0f` | `" min"` | `460` | All |
 | Sleep Latency | `WithingsSleepLatency` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `12` | All |
 | Wakeup Latency | `WithingsWakeupLatency` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `8` | All |
-| Wake After Sleep | `WithingsWakeAfterSleep` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `25` | All |
+| Wake After Sleep (WASO) | `WithingsWakeAfterSleep` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `0` | All |
+| Awake Total (in bed) | `WithingsAwakeTotal` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `18` | All |
 | Wakeup Count | `WithingsWakeupCount` | Numeric | — | 0 | 100 | `.0f` | — | `3` | All |
 | Out Of Bed Count | `WithingsOutOfBedCount` | Numeric | — | 0 | 100 | `.0f` | — | `1` | All |
 | REM Episodes | `WithingsRemEpisodes` | Numeric | — | 0 | 100 | `.0f` | — | `4` | All |
@@ -435,10 +440,13 @@ the OK button stays greyed out). Suffix shown with a leading space.
 | Snoring | `WithingsSnoring` | Numeric | min | 0 | 600 | `.0f` | `" min"` | `8` | All |
 | Snoring Episodes | `WithingsSnoringEpisodes` | Numeric | — | 0 | 100 | `.0f` | — | `2` | All |
 | Breathing Disturbance | `WithingsBreathingDisturbance` | Numeric | — | 0 | 100 | `.0f` | — | `30` | All |
+| Movement Score | `WithingsMovementScore` | Numeric | — | 0 | 255 | `.0f` | — | `2` | All |
+| Movement Duration | `WithingsMovementDuration` | Numeric | min | 0 | 1440 | `.0f` | `" min"` | `21` | All |
 | Sleep HR Min | `WithingsSleepHRMin` | Numeric | bpm | 0 | 250 | `.0f` | `" bpm"` | `48` | All |
 | Sleep HR Max | `WithingsSleepHRMax` | Numeric | bpm | 0 | 250 | `.0f` | `" bpm"` | `78` | All |
 | Respiration Min | `WithingsRespirationMin` | Numeric | br/min | 0 | 60 | `.1f` | `" br/min"` | `12.0` | All |
 | Respiration Max | `WithingsRespirationMax` | Numeric | br/min | 0 | 60 | `.1f` | `" br/min"` | `18.0` | All |
+| HRV Start (first 90 min) | `WithingsHRVStart` | Numeric | ms | 0 | 500 | `.0f` | `" ms"` | `29` | All |
 | Apnea Index | `WithingsApneaIndex` | Numeric | /hr | 0 | 100 | `.1f` | `"/hr"` | `4.5` | Analyzer only |
 
 > Duration unit is controlled by `SLEEP_DURATION_UNIT` in `worker.js` (`"minutes"` default;

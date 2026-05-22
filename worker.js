@@ -308,14 +308,16 @@ export default {
     sleep_score:                      { intervalsField: 'sleepScore',                  builtin: true,  kind: 'plain',    decimals: 0, combine: 'primary' },
     hr_average:                       { intervalsField: 'avgSleepingHR',               builtin: true,  kind: 'plain',    decimals: 0, combine: 'wavg' },
     rr_average:                       { intervalsField: 'respiration',                 builtin: true,  kind: 'plain',    decimals: 1, combine: 'wavg' },
-    rmssd:                            { intervalsField: 'hrv',                         builtin: true,  kind: 'plain',    decimals: 1, combine: 'wavg' },
+    rmssd_end_avg:                    { intervalsField: 'hrv',                         builtin: true,  kind: 'plain',    decimals: 0, combine: 'last' },  // HRV (RMSSD ms) "last 90 min" / near waking
+    rmssd_start_avg:                  { intervalsField: 'WithingsHRVStart',            builtin: false, kind: 'plain',    decimals: 0, combine: 'first' }, // HRV (RMSSD ms) "first 90 min" / near onset
     deepsleepduration:                { intervalsField: 'WithingsSleepDeep',           builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
     lightsleepduration:               { intervalsField: 'WithingsSleepLight',          builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
     remsleepduration:                 { intervalsField: 'WithingsSleepREM',            builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
     total_timeinbed:                  { intervalsField: 'WithingsTimeInBed',           builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
     sleep_latency:                    { intervalsField: 'WithingsSleepLatency',        builtin: false, kind: 'duration', decimals: 0, combine: 'first' },
     wakeup_latency:                   { intervalsField: 'WithingsWakeupLatency',       builtin: false, kind: 'duration', decimals: 0, combine: 'last' },
-    wakeupduration:                   { intervalsField: 'WithingsWakeAfterSleep',      builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
+    wakeupduration:                   { intervalsField: 'WithingsAwakeTotal',          builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },  // total awake in bed (latency + WASO + wake latency)
+    waso:                             { intervalsField: 'WithingsWakeAfterSleep',      builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },  // wake after sleep onset (true WASO)
     wakeupcount:                      { intervalsField: 'WithingsWakeupCount',         builtin: false, kind: 'plain',    decimals: 0, combine: 'sum' },
     out_of_bed_count:                 { intervalsField: 'WithingsOutOfBedCount',       builtin: false, kind: 'plain',    decimals: 0, combine: 'sum' },
     nb_rem_episodes:                  { intervalsField: 'WithingsRemEpisodes',         builtin: false, kind: 'plain',    decimals: 0, combine: 'sum' },
@@ -323,6 +325,8 @@ export default {
     snoring:                          { intervalsField: 'WithingsSnoring',             builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },
     snoringepisodecount:              { intervalsField: 'WithingsSnoringEpisodes',     builtin: false, kind: 'plain',    decimals: 0, combine: 'sum' },
     breathing_disturbances_intensity: { intervalsField: 'WithingsBreathingDisturbance', builtin: false, kind: 'plain',  decimals: 0, combine: 'wavg' },
+    mvt_score_avg:                    { intervalsField: 'WithingsMovementScore',       builtin: false, kind: 'plain',    decimals: 0, combine: 'wavg' }, // movement intensity (0-255)
+    mvt_active_duration:              { intervalsField: 'WithingsMovementDuration',    builtin: false, kind: 'duration', decimals: 0, combine: 'sum' },  // time moving
     hr_min:                           { intervalsField: 'WithingsSleepHRMin',          builtin: false, kind: 'plain',    decimals: 0, combine: 'min' },
     hr_max:                           { intervalsField: 'WithingsSleepHRMax',          builtin: false, kind: 'plain',    decimals: 0, combine: 'max' },
     rr_min:                           { intervalsField: 'WithingsRespirationMin',      builtin: false, kind: 'plain',    decimals: 1, combine: 'min' },
