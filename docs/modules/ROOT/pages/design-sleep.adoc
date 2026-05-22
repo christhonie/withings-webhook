@@ -125,8 +125,11 @@ small.
 * OAuth: enabling sleep requires re-authorising with `user.activity` (and `user.sleepevents`
   for `appli=52`). A token minted with only `user.metrics` returns an authorisation error, which
   the handler logs explicitly rather than failing silently.
-* Device variance: the original Withings Sleep mat, for example, reports no apnea index and no
-  HRV, so those fields are absent and dropped. Apnea (AHI) is Sleep Analyzer-only.
+* Device variance: a device only reports a subset of fields, and the same metric may use
+  endpoint-specific codes. HRV, for example, is exposed by `getsummary` as `rmssd_start_avg`
+  and `rmssd_end_avg` (RMSSD ms) — not the plain `rmssd`, which exists only in the
+  high-frequency `get` endpoint; SDNN is likewise absent from `getsummary`. Apnea (AHI) is
+  Sleep Analyzer-only. Whatever a device doesn't report is simply absent and dropped.
 * Operational guidance — creating the custom fields, scopes, subscriptions and rotating
   credentials — lives in the repository `README.md`.
 
