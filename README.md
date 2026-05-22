@@ -474,18 +474,17 @@ Worker secrets. Updating one takes effect on the **next request — no redeploy 
 causes the wellness `PUT` to return **401**, which the Worker logs at `WARN`/`ERROR` and parks in
 a `retry_*` KV key (it does **not** appear at `INFO` — filter the log view to WARN/ERROR). To recover:
 
-. Re-trigger the affected path(s) by POSTing a notify to the Worker for the date range, e.g.:
-+
-[source,bash]
-----
-# body composition (appli=1)
-curl -X POST "$WORKER_URL" -d "userid=$UID" -d "appli=1" \
-  -d "startdate=$(date -d '7 days ago' +%s)" -d "enddate=$(date +%s)"
-# sleep (appli=44)
-curl -X POST "$WORKER_URL" -d "userid=$UID" -d "appli=44" \
-  -d "startdate=$(date -d '2 days ago' +%s)" -d "enddate=$(date +%s)"
-----
-. Confirm the data landed in Intervals, then delete the now-stale `retry_${userid}_*` KV keys.
+1.  Re-trigger the affected path(s) by POSTing a notify to the Worker for the date range, e.g.:
+
+    ```bash
+    # body composition (appli=1)
+    curl -X POST "$WORKER_URL" -d "userid=$UID" -d "appli=1" \
+      -d "startdate=$(date -d '7 days ago' +%s)" -d "enddate=$(date +%s)"
+    # sleep (appli=44)
+    curl -X POST "$WORKER_URL" -d "userid=$UID" -d "appli=44" \
+      -d "startdate=$(date -d '2 days ago' +%s)" -d "enddate=$(date +%s)"
+    ```
+2.  Confirm the data landed in Intervals, then delete the now-stale `retry_${userid}_*` KV keys.
 
 > **Tip:** verify a key before relying on it — `curl -u "API_KEY:<key>" https://intervals.icu/api/v1/athlete/<id>/profile` should return **200**.
 
