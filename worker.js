@@ -21,6 +21,7 @@ const LOG_CONFIG = {
     measurements: true,    // Measurement group processing
     fields: false,         // Field extraction details
     duplicates: true,      // Duplicate checking (essential for debugging)
+    withings: true,        // Withings API calls (getmeas, sleep getsummary)
     intervals: true,       // Intervals API calls
     tokens: false,         // Token operations
     retries: true,         // Retry operations
