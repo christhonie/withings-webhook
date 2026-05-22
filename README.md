@@ -456,6 +456,37 @@ Every notify payload is validated:
 
 If the payload is invalid, the Worker responds with **400** and logs the error.
 
+🔑 Rotating / Updating Credentials
+----------------------------------
+
+Credentials (`INTERVALS_API_KEY`, `WITHINGS_CLIENT_SECRET`, etc.) are stored as encrypted
+Worker secrets. Updating one takes effect on the **next request — no redeploy needed**.
+
+**Update a secret** (any one of):
+
+* **Wrangler, from `.dev.vars`:** edit the value in `.dev.vars`, then `wrangler secret bulk .dev.vars`.
+* **Wrangler, single secret:** `wrangler secret put INTERVALS_API_KEY` (prompts; input hidden).
+* **Cloudflare dashboard:** Workers & Pages → `withings-webhook` → Settings → Variables and Secrets → edit the secret → Save.
+
+**Then backfill anything that failed while the credential was stale.** A rotated Intervals key
+causes the wellness `PUT` to return **401**, which the Worker logs at `WARN`/`ERROR` and parks in
+a `retry_*` KV key (it does **not** appear at `INFO` — filter the log view to WARN/ERROR). To recover:
+
+. Re-trigger the affected path(s) by POSTing a notify to the Worker for the date range, e.g.:
++
+[source,bash]
+----
+# body composition (appli=1)
+curl -X POST "$WORKER_URL" -d "userid=$UID" -d "appli=1" \
+  -d "startdate=$(date -d '7 days ago' +%s)" -d "enddate=$(date +%s)"
+# sleep (appli=44)
+curl -X POST "$WORKER_URL" -d "userid=$UID" -d "appli=44" \
+  -d "startdate=$(date -d '2 days ago' +%s)" -d "enddate=$(date +%s)"
+----
+. Confirm the data landed in Intervals, then delete the now-stale `retry_${userid}_*` KV keys.
+
+> **Tip:** verify a key before relying on it — `curl -u "API_KEY:<key>" https://intervals.icu/api/v1/athlete/<id>/profile` should return **200**.
+
 🔄 Token Management
 -------------------
 
