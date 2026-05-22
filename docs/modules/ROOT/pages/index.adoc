@@ -1,0 +1,23 @@
+= Withings Webhook Documentation
+:description: Design documentation for the Withings to Intervals.icu Cloudflare Worker.
+:keywords: withings, intervals.icu, cloudflare worker, sleep, design
+
+== Overview
+
+Design documentation for the Cloudflare Worker that bridges Withings device data
+(body composition and sleep) into Intervals.icu daily wellness records.
+
+For setup, configuration and operational guidance, see the repository `README.md`.
+The Worker implementation lives in `worker.js` at the repository root.
+
+== Design Documents
+
+* xref:design-sleep.adoc[Sleep Integration Design] — how Withings Sleep summaries are
+  ingested and mapped to Intervals wellness fields.
+* xref:design-naps.adoc[Naps Handling Design] — proposed handling of daytime naps
+  (outstanding / not yet implemented).
+
+== Additional Resources
+
+* Withings API reference: https://developer.withings.com/api-reference/[developer.withings.com]
+* Intervals.icu API: https://intervals.icu/api-docs.html[intervals.icu/api-docs.html]

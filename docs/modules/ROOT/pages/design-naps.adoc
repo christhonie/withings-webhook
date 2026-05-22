@@ -1,0 +1,91 @@
+= Naps Handling Design
+:author: Christhonie Geldenhuys
+:revdate: 2026-05-22
+:revnumber: 0.1
+:status: draft
+:description: Proposed handling of daytime naps in the Withings Sleep integration.
+
+== Purpose
+
+Define how the Worker should treat *daytime naps* — short sleep sessions that Withings records
+separately from the main overnight sleep. This is outstanding functionality: today's behaviour
+is a side effect of the multi-series combine logic, not a deliberate nap policy. This document
+captures the problem, the options, and a recommended direction so the decision can be made
+before any implementation.
+
+== Context
+
+Withings records a sleep session from roughly ten minutes of actual sleep, so a nap can produce
+its own sleep summary in addition to the overnight one. The Worker maps a sleep summary to a
+single Intervals daily wellness record, keyed by date. When Withings returns more than one
+series for the same calendar date, the Worker merges them per field (see
+xref:design-sleep.adoc[Sleep Integration Design]).
+
+Two distinct situations produce multiple same-date series, and they call for opposite treatment:
+
+* *A split night* — one night that Withings reports as two series (for example after a long
+  mid-night awakening). These *should* be combined into a single night record.
+* *A genuine nap* — a separate daytime sleep on the same date. Combining it into the night
+  inflates the night's totals (for example, nap deep-sleep added to the night's deep-sleep).
+
+The ambiguity is that both appear, at the data level, simply as "more than one series for the
+same date."
+
+== Current behaviour
+
+Same-date series are always combined into the one daily record. This is correct for split
+nights, but it means a same-date nap is currently *folded into the night total* — usually not
+what the athlete wants.
+
+== Options evaluated
+
+=== A. Fold naps into the night (status quo)
+
+Simple, and correct for split nights, but wrong for naps. No change required.
+
+=== B. Keep only the main (longest) series per date
+
+Produces clean nightly metrics and ignores naps, but it also discards the second half of a
+genuinely split night, losing data.
+
+=== C. Separate nap representation
+
+Preserve naps in their own fields (for example a `WithingsNap*` family) or otherwise distinguish
+them, so both night and nap survive. Keeps all data, but adds fields and raises the question of
+how Intervals — a one-record-per-day wellness model — should represent intra-day sleeps.
+
+=== D. Time / gap-based classification
+
+Classify each series as "night" or "nap" using time-of-day and/or the gap from the main session,
+then combine night parts and route naps according to a chosen policy (ignore them, or store them
+separately per option C). The most accurate option, and the most complex; it needs a reliable
+rule and real nap data to validate.
+
+== Recommendation and rationale
+
+Target *option D* as the correct long-term behaviour, because only classification distinguishes
+a split night from a nap — the root ambiguity. Until that is built, *option B* is the safest
+interim default for an athlete who naps: it protects the integrity of the headline nightly
+metrics, and the residual risk (losing the second half of a split night) is rarer than nap
+contamination of every napped day. Option C can be layered on later if preserving nap detail
+proves valuable.
+
+This requires a product decision before implementation and is deliberately deferred.
+
+== Open questions
+
+* How consistently does Withings assign a nap to the *same* calendar date as the preceding
+  night, versus its own date?
+* What time-of-day or gap threshold reliably separates a nap from a night — and a nap from a
+  split night?
+* How should Intervals' one-record-per-day wellness model represent a night plus a nap: merged,
+  separate custom fields, or night-only?
+
+== Implementation notes
+
+* The single change point is the per-date grouping and combine step in the sleep handler; a
+  classifier would run there, before the per-field combine.
+* No schema change is needed for options A or B; options C and D would add custom fields and/or
+  a classification rule.
+* Validation requires real same-date nap data — the device records a nap from about ten minutes
+  of actual sleep, so short "lie-downs" without sleep will not produce a series to test against.

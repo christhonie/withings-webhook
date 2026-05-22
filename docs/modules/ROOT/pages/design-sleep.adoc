@@ -1,0 +1,136 @@
+= Sleep Integration Design
+:author: Christhonie Geldenhuys
+:revdate: 2026-05-22
+:revnumber: 1.0
+:status: implemented
+:description: Design of the Withings Sleep to Intervals.icu wellness integration.
+
+== Purpose
+
+Explain why and how the Worker ingests Withings Sleep data (from an under-mattress
+Sleep / Sleep Analyzer / Sleep Rx device) and writes it to Intervals.icu daily wellness
+records. Sleep tracking was added on top of the existing body-composition pipeline.
+
+Sleep differs from body composition in three fundamental ways, and these differences shape
+the whole design:
+
+* It arrives under a different Withings notification category — `appli=44` ("sleep summary"),
+  not `appli=1`.
+* It is fetched from a different API — `v2/sleep` (`action=getsummary`), not
+  `measure` (`action=getmeas`).
+* It requires an additional OAuth scope — `user.activity` (plus `user.sleepevents` for the
+  optional device check-in event).
+
+== Context
+
+The Worker already received Withings webhooks and pushed body-composition measurements to
+Intervals daily wellness. The objective was to add a parallel path for sleep that reuses the
+existing machinery — OAuth token management, the hardened Intervals sender, and per-record
+deduplication — without disturbing the proven body path.
+
+== Options evaluated
+
+=== Notification routing
+
+* *Single handler, infer type from the data* — fragile, because the payloads, endpoints and
+  scopes differ.
+* *Branch on `appli` (chosen)* — the notify payload carries `appli`; route `44` to a dedicated
+  sleep handler, keep `1` (or absent) on the body handler, and treat device events (`52`, and
+  `50`/`51`) separately. Explicit and extensible.
+
+=== Field mapping to Intervals
+
+Intervals provides a small set of built-in sleep wellness fields and supports user-defined
+custom fields.
+
+* *Custom fields for everything* — uniform, but needlessly duplicates fields Intervals already
+  has (and that other tools may populate).
+* *Map to built-ins where they exist, custom for the rest (chosen)* — total sleep, sleep score,
+  average sleeping heart rate, respiration and HRV map to built-ins; sleep stages, latencies,
+  wake metrics, efficiency, snoring, breathing-disturbance and HR/respiration bounds become
+  custom `Withings*` fields the user creates once.
+
+=== Unrecognised or missing fields
+
+Custom fields must be created manually, and devices vary in what they report. Intervals rejects
+an entire wellness `PUT` with HTTP 422 if *any* single field code is undefined.
+
+* *Pre-create or pre-validate a field list* — needs a maintained list and still breaks on drift.
+* *One PUT per field* — isolates failures but multiplies API calls and complicates dedupe.
+* *Drop-unknown-and-retry (chosen)* — on a 422 the sender removes the offending field and
+  retries, so every recognised field still saves; dropped fields are reported and retried later
+  once created. This makes device variance and "fields not created yet" non-fatal.
+
+=== Combining multiple sleep series for one night
+
+Withings can return more than one sleep "series" for a single calendar date — a split night, or
+a nap.
+
+* *Take the longest series only* — loses data when a night is genuinely split.
+* *Sum everything* — wrong for non-additive metrics (extremes, averages, ratios).
+* *Per-field combine policy (chosen)* — each field declares how it merges: *sum* (durations,
+  counts), *min* / *max* (HR and respiration bounds), *duration-weighted average* (rates and
+  intensities), *recomputed ratio* (efficiency, from the combined totals), *first* / *last*
+  series (sleep-onset and final-wake latency), and the *longest* series for non-additive scores.
+  For a single series every rule is a pass-through.
+
+=== Units
+
+* *Raw seconds* — consistent but unreadable for stage durations on charts.
+* *Minutes for custom duration fields (chosen)*, while the built-in `sleepSecs` stays in seconds
+  (its API contract). A single switch controls the custom-duration unit so it can be changed
+  centrally.
+
+=== Idempotency and deduplication
+
+Withings frequently sends several `appli=44` webhooks for one night as the session is finalised
+(for example after a brief get-up and return).
+
+* *Always re-send everything* — correct, since the wellness `PUT` is idempotent, but noisy and
+  it re-runs the drop-unknown cycle each time.
+* *Per-night change detection (chosen)* — only fields whose values changed since the last send
+  are re-sent, keyed per night date. Dropped fields are never recorded as sent, so they
+  self-heal once their custom field exists.
+
+=== Device check-in
+
+The sleep mat emits `appli=52` ("inflate done") when it powers up or recalibrates.
+
+* *Ignore it* — no visibility of device health.
+* *Log and persist a check-in record (chosen)* — log the event and store a small `checkin_*` KV
+  record so it is observable after the fact. Delivery is best-effort and device-dependent.
+
+== Rationale
+
+The design prioritises *robustness at write time over completeness*: built-in fields and any
+already-created custom fields always save, while anything else degrades gracefully — dropped,
+logged and retried — rather than failing the whole night. The correctness of *combined* data is
+handled explicitly, per field, instead of with a single blunt rule. Reusing the existing token,
+sender and dedupe code keeps the sleep path consistent with the body path and keeps the change
+small.
+
+== Implementation notes
+
+* Routing happens in the Worker's HTTP entry point, branching on `appli`.
+* The sleep handler fetches `v2/sleep getsummary` over a +/- 1 day window around the
+  notification and trusts each series' own `date` (computed in the account's timezone) as the
+  wellness date, so sessions that start after midnight are dated correctly.
+* A single mapping table declares, per Withings field: the target Intervals field, whether it is
+  built-in or custom, the unit transform, decimals, and the combine strategy. The requested
+  `data_fields` list is derived from this table.
+* Multiple series for one date are merged by the per-field combine policy before sending.
+* Sending reuses the hardened Intervals sender (drop-unknown-and-retry) and the existing
+  per-record dedupe helpers, keyed `sent_<userid>_sleep_<date>`; failures park in
+  `retry_<userid>_sleep_<date>`.
+* OAuth: enabling sleep requires re-authorising with `user.activity` (and `user.sleepevents`
+  for `appli=52`). A token minted with only `user.metrics` returns an authorisation error, which
+  the handler logs explicitly rather than failing silently.
+* Device variance: the original Withings Sleep mat, for example, reports no apnea index and no
+  HRV, so those fields are absent and dropped. Apnea (AHI) is Sleep Analyzer-only.
+* Operational guidance — creating the custom fields, scopes, subscriptions and rotating
+  credentials — lives in the repository `README.md`.
+
+== Related
+
+* xref:design-naps.adoc[Naps Handling Design] — the outstanding decision on daytime naps, which
+  builds on the per-field combine logic described here.
